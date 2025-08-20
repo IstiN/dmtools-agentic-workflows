@@ -1,0 +1,375 @@
+name: Reusable Aider Assist
+
+on:
+  workflow_call:
+    inputs:
+      user_request:
+        description: 'Your request for Aider'
+        required: true
+        type: string
+      target_files:
+        description: 'Files to include in context (comma-separated, optional)'
+        required: false
+        type: string
+        default: ''
+      model:
+        description: 'Model to use with Aider'
+        required: false
+        type: string
+        default: 'gemini/gemini-2.5-flash-preview-05-20'
+      max_tokens:
+        description: 'Maximum tokens for context'
+        required: false
+        type: number
+        default: 1000000
+      enable_debug_logging:
+        description: 'Enable comprehensive debug logging'
+        required: false
+        type: boolean
+        default: true
+      
+      # Prompt override parameters
+      custom_assist_prompt:
+        description: 'Custom assist prompt file path in calling repo'
+        required: false
+        type: string
+        default: ''
+      custom_rules_file:
+        description: 'Custom rules file path in calling repo'
+        required: false
+        type: string
+        default: ''
+      additional_context_files:
+        description: 'Additional context files (comma-separated) from calling repo'
+        required: false
+        type: string
+        default: ''
+        
+      # Workflow repo configuration
+      workflows_repo:
+        description: 'Repository containing agentic workflows'
+        required: false
+        type: string
+        default: 'IstiN/dmtools-agentic-workflows'
+      workflows_ref:
+        description: 'Git ref (branch/tag) of workflows repo to use'
+        required: false
+        type: string
+        default: 'main'
+        
+    secrets:
+      GEMINI_API_KEY:
+        description: 'Gemini API key for AI interactions'
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  aider-analysis:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout target repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        path: target-repo
+        
+    - name: Checkout agentic workflows
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.workflows_repo }}
+        ref: ${{ inputs.workflows_ref }}
+        path: agentic-workflows
+        
+    - name: Setup Python environment
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install Aider
+      run: |
+        pip install aider-chat
+        echo "✅ Aider installed successfully"
+        aider --version
+        
+    - name: Setup prompt configuration
+      run: |
+        cd target-repo
+        echo "🔧 Setting up Aider prompt configuration..."
+        
+        # Create prompts directory
+        mkdir -p .agentic-config/prompts
+        
+        # Copy default prompts from agentic-workflows
+        cp ../agentic-workflows/prompts/* .agentic-config/prompts/
+        
+        # Override with custom prompts if provided
+        if [ -n "${{ inputs.custom_assist_prompt }}" ] && [ -f "${{ inputs.custom_assist_prompt }}" ]; then
+          echo "✅ Using custom assist prompt: ${{ inputs.custom_assist_prompt }}"
+          cp "${{ inputs.custom_assist_prompt }}" .agentic-config/prompts/assist-prompt.md
+        else
+          echo "📋 Using default assist prompt"
+        fi
+        
+        # Aggregate custom rules if provided
+        if [ -n "${{ inputs.custom_rules_file }}" ] && [ -f "${{ inputs.custom_rules_file }}" ]; then
+          echo "✅ Including custom rules: ${{ inputs.custom_rules_file }}"
+          echo "" >> .agentic-config/prompts/assist-prompt.md
+          echo "## Custom Project Rules" >> .agentic-config/prompts/assist-prompt.md
+          echo "" >> .agentic-config/prompts/assist-prompt.md
+          cat "${{ inputs.custom_rules_file }}" >> .agentic-config/prompts/assist-prompt.md
+        fi
+        
+        # Include additional context files
+        if [ -n "${{ inputs.additional_context_files }}" ]; then
+          echo "✅ Including additional context files: ${{ inputs.additional_context_files }}"
+          echo "" >> .agentic-config/prompts/assist-prompt.md
+          echo "## Additional Project Context" >> .agentic-config/prompts/assist-prompt.md
+          echo "" >> .agentic-config/prompts/assist-prompt.md
+          
+          IFS=',' read -ra FILES <<< "${{ inputs.additional_context_files }}"
+          for file in "${FILES[@]}"; do
+            file=$(echo "$file" | xargs)  # trim whitespace
+            if [ -f "$file" ]; then
+              echo "### $file" >> .agentic-config/prompts/assist-prompt.md
+              echo '```' >> .agentic-config/prompts/assist-prompt.md
+              cat "$file" >> .agentic-config/prompts/assist-prompt.md
+              echo '```' >> .agentic-config/prompts/assist-prompt.md
+              echo "" >> .agentic-config/prompts/assist-prompt.md
+            fi
+          done
+        fi
+        
+        echo "📋 Final Aider prompt configuration:"
+        ls -la .agentic-config/prompts/
+        
+    - name: Prepare Aider environment
+      run: |
+        cd target-repo
+        
+        # Create outputs directory
+        mkdir -p outputs
+        
+        # Set up environment variables
+        export GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}"
+        export PROMPTS_PATH=".agentic-config/prompts"
+        
+        # Prepare user request file
+        echo "${{ inputs.user_request }}" > outputs/user-request.txt
+        
+        echo "📋 Aider environment prepared"
+        echo "- Model: ${{ inputs.model }}"
+        echo "- Max tokens: ${{ inputs.max_tokens }}"
+        echo "- Target files: ${{ inputs.target_files }}"
+
+    - name: Run Aider analysis
+      id: aider_analysis
+      run: |
+        cd target-repo
+        echo "🚀 Starting Aider Analysis"
+        
+        # Export environment variables
+        export GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}"
+        export PROMPTS_PATH=".agentic-config/prompts"
+        
+        # Configure debug logging
+        if [ "${{ inputs.enable_debug_logging }}" = "true" ]; then
+          echo "🔍 Debug logging ENABLED - comprehensive output will be shown"
+        else
+          echo "🔇 Debug logging DISABLED - minimal output will be shown"
+        fi
+        
+        # Run Aider using our script with comprehensive logging
+        echo "🚀 Executing run-aider.sh script..."
+        
+        # Prepare parameters for run-aider.sh
+        TARGET_FILES="${{ inputs.target_files }}"
+        MODEL="${{ inputs.model }}"
+        MAX_TOKENS="${{ inputs.max_tokens }}"
+        PROMPT_FILE=".agentic-config/prompts/assist-prompt.md"
+        
+        # Capture both stdout and stderr with timestamps
+        (
+          echo "=== AIDER EXECUTION START: $(date) ==="
+          
+          # Run Aider script with timeout protection
+          timeout --signal=TERM --kill-after=60s 20m ../agentic-workflows/scripts/run-aider.sh \
+            "outputs/user-request.txt" \
+            "$TARGET_FILES" \
+            "$MODEL" \
+            "${{ secrets.GEMINI_API_KEY }}" \
+            "$MAX_TOKENS" \
+            "$PROMPT_FILE" \
+            "analysis" 2>&1 | while IFS= read -r line; do
+            echo "[$(date '+%H:%M:%S')] $line"
+          done
+          
+          TIMEOUT_EXIT=$?
+          echo "=== AIDER EXECUTION END: $(date) ==="
+          if [ $TIMEOUT_EXIT -eq 124 ]; then
+            echo "❌ TIMEOUT: Aider execution exceeded 20 minutes"
+          elif [ $TIMEOUT_EXIT -eq 137 ]; then
+            echo "❌ KILLED: Aider process was forcefully terminated"
+          fi
+          exit $TIMEOUT_EXIT
+        ) | tee outputs/aider-execution.log
+        AIDER_EXIT_CODE=${PIPESTATUS[0]}
+        
+        echo "📋 Script exit code: $AIDER_EXIT_CODE"
+        
+        # Check for log files and show summary
+        echo "🔍 Debug: Checking for output files..."
+        ls -la outputs/ || echo "❌ No outputs directory found"
+        
+        # Look for response files
+        if [ -f "outputs/response.md" ]; then
+          echo "✅ Found response.md ($(wc -c < outputs/response.md) bytes)"
+          echo "📋 Response.md preview (first 20 lines):"
+          head -20 outputs/response.md
+          AIDER_RESPONSE=$(cat outputs/response.md)
+        elif [ -f "outputs/response_"*".txt" ]; then
+          echo "✅ Found response text file"
+          RESPONSE_FILE=$(ls outputs/response_*.txt | head -1)
+          echo "📋 Response file: $RESPONSE_FILE"
+          head -20 "$RESPONSE_FILE"
+          AIDER_RESPONSE=$(cat "$RESPONSE_FILE")
+        else
+          echo "❌ No response file found!"
+          echo "🔍 Available files in outputs directory:"
+          ls -la outputs/ || echo "❌ No outputs directory found"
+          AIDER_RESPONSE="Aider analysis completed but no response file found"
+        fi
+        
+        # Check if analysis was successful
+        if [ $AIDER_EXIT_CODE -eq 0 ]; then
+          echo "✅ Aider analysis completed successfully"
+          echo "aider_response<<EOF" >> $GITHUB_OUTPUT
+          echo "$AIDER_RESPONSE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "analysis_success=true" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Aider analysis failed with exit code $AIDER_EXIT_CODE"
+          
+          # Determine failure reason
+          if [ $AIDER_EXIT_CODE -eq 124 ]; then
+            FAILURE_REASON="TIMEOUT - Execution exceeded 20 minutes"
+          elif [ $AIDER_EXIT_CODE -eq 137 ]; then
+            FAILURE_REASON="KILLED - Process was forcefully terminated"
+          else
+            FAILURE_REASON="FAILED with exit code $AIDER_EXIT_CODE"
+          fi
+          
+          echo "🔍 Failure reason: $FAILURE_REASON"
+          echo "aider_response=Aider analysis $FAILURE_REASON" >> $GITHUB_OUTPUT
+          echo "analysis_success=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create analysis summary
+      env:
+        AIDER_RESPONSE: ${{ steps.aider_analysis.outputs.aider_response }}
+        ANALYSIS_SUCCESS: ${{ steps.aider_analysis.outputs.analysis_success }}
+      run: |
+        cd target-repo
+        # Save analysis summary
+        mkdir -p outputs/analysis-summary
+        echo "$AIDER_RESPONSE" > outputs/analysis-summary/aider-analysis.md
+        echo "📝 Analysis summary saved"
+        
+        # Create a comprehensive analysis report
+        echo "# 🤖 Aider Analysis Report" > outputs/analysis-summary/full-report.md
+        echo "" >> outputs/analysis-summary/full-report.md
+        echo "**Generated on:** $(date)" >> outputs/analysis-summary/full-report.md
+        echo "**Model Used:** ${{ inputs.model }}" >> outputs/analysis-summary/full-report.md
+        echo "**Workflows Repo:** ${{ inputs.workflows_repo }}@${{ inputs.workflows_ref }}" >> outputs/analysis-summary/full-report.md
+        echo "**Analysis Success:** $ANALYSIS_SUCCESS" >> outputs/analysis-summary/full-report.md
+        echo "" >> outputs/analysis-summary/full-report.md
+        
+        echo "## 📋 Original Request" >> outputs/analysis-summary/full-report.md
+        echo "" >> outputs/analysis-summary/full-report.md
+        echo '```' >> outputs/analysis-summary/full-report.md
+        cat outputs/user-request.txt >> outputs/analysis-summary/full-report.md
+        echo '```' >> outputs/analysis-summary/full-report.md
+        echo "" >> outputs/analysis-summary/full-report.md
+        
+        if [ -n "${{ inputs.target_files }}" ]; then
+          echo "## 📁 Target Files" >> outputs/analysis-summary/full-report.md
+          echo "" >> outputs/analysis-summary/full-report.md
+          echo "${{ inputs.target_files }}" >> outputs/analysis-summary/full-report.md
+          echo "" >> outputs/analysis-summary/full-report.md
+        fi
+        
+        echo "## 🤖 Aider Analysis" >> outputs/analysis-summary/full-report.md
+        echo "" >> outputs/analysis-summary/full-report.md
+        echo "$AIDER_RESPONSE" >> outputs/analysis-summary/full-report.md
+        
+        echo "" >> outputs/analysis-summary/full-report.md
+        echo "## 📊 Execution Details" >> outputs/analysis-summary/full-report.md
+        echo "" >> outputs/analysis-summary/full-report.md
+        echo "- **Workflow Run:** [${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> outputs/analysis-summary/full-report.md
+        echo "- **Repository:** ${{ github.repository }}" >> outputs/analysis-summary/full-report.md
+        echo "- **Branch:** ${{ github.ref_name }}" >> outputs/analysis-summary/full-report.md
+        echo "- **Commit:** ${{ github.sha }}" >> outputs/analysis-summary/full-report.md
+        
+        echo "✅ Full analysis report created"
+
+    - name: Upload analysis results as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: agentic-aider-results-${{ github.run_number }}
+        path: |
+          target-repo/outputs/response.md
+          target-repo/outputs/response_*.txt
+          target-repo/outputs/user-request.txt
+          target-repo/outputs/aider-execution.log
+          target-repo/outputs/analysis-summary/
+        retention-days: 7
+        if-no-files-found: warn
+
+    - name: Display analysis summary
+      env:
+        AIDER_RESPONSE: ${{ steps.aider_analysis.outputs.aider_response }}
+        ANALYSIS_SUCCESS: ${{ steps.aider_analysis.outputs.analysis_success }}
+      run: |
+        # Display comprehensive summary
+        echo "## 🤖 Aider Analysis Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Show request details
+        echo "### 📋 Request Details" >> $GITHUB_STEP_SUMMARY
+        echo "- **Model**: ${{ inputs.model }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Max Tokens**: ${{ inputs.max_tokens }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Debug Logging**: ${{ inputs.enable_debug_logging }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Workflows Repo**: ${{ inputs.workflows_repo }}@${{ inputs.workflows_ref }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Success**: $ANALYSIS_SUCCESS" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -n "${{ inputs.target_files }}" ]; then
+          echo "### 📁 Target Files" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "${{ inputs.target_files }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Show original request
+        echo "### 📝 Original Request" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        cat target-repo/outputs/user-request.txt >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Show analysis results
+        echo "### 🤖 Aider Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "$AIDER_RESPONSE" >> $GITHUB_STEP_SUMMARY
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📊 Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Analysis results and logs have been uploaded as workflow artifacts:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Artifact Name**: agentic-aider-results-${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Retention**: 7 days" >> $GITHUB_STEP_SUMMARY
+        echo "- **Contents**: Analysis results, logs, and full report" >> $GITHUB_STEP_SUMMARY

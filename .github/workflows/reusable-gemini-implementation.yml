@@ -1,0 +1,479 @@
+name: Reusable Gemini Implementation
+
+on:
+  workflow_call:
+    inputs:
+      user_request:
+        description: 'Your coding request for Gemini CLI'
+        required: true
+        type: string
+      model:
+        description: 'Gemini model to use'
+        required: false
+        type: string
+        default: 'gemini-2.5-flash-preview-05-20'
+      pr_base_branch:
+        description: 'Base branch for the pull request'
+        required: false
+        type: string
+        default: 'main'
+      enable_debug_logging:
+        description: 'Enable comprehensive debug logging for Gemini CLI'
+        required: false
+        type: boolean
+        default: true
+      
+      # Prompt override parameters
+      custom_implementation_prompt:
+        description: 'Custom implementation prompt file path in calling repo'
+        required: false
+        type: string
+        default: ''
+      custom_pr_prompt:
+        description: 'Custom PR generation prompt file path in calling repo'
+        required: false
+        type: string
+        default: ''
+      custom_rules_file:
+        description: 'Custom rules file path in calling repo'
+        required: false
+        type: string
+        default: ''
+      additional_context_files:
+        description: 'Additional context files (comma-separated) from calling repo'
+        required: false
+        type: string
+        default: ''
+        
+      # Workflow repo configuration
+      workflows_repo:
+        description: 'Repository containing agentic workflows'
+        required: false
+        type: string
+        default: 'IstiN/dmtools-agentic-workflows'
+      workflows_ref:
+        description: 'Git ref (branch/tag) of workflows repo to use'
+        required: false
+        type: string
+        default: 'main'
+        
+    secrets:
+      GEMINI_API_KEY:
+        description: 'Gemini API key for AI interactions'
+        required: true
+      PAT_TOKEN:
+        description: 'Personal access token for GitHub operations'
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  implement-code:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout target repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        path: target-repo
+        
+    - name: Checkout agentic workflows
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.workflows_repo }}
+        ref: ${{ inputs.workflows_ref }}
+        path: agentic-workflows
+        
+    - name: Setup Node.js environment
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        
+    - name: Install Gemini CLI
+      run: |
+        npm install -g @google/gemini-cli
+        echo "✅ Gemini CLI installed successfully"
+        
+    - name: Setup prompt configuration
+      run: |
+        cd target-repo
+        echo "🔧 Setting up prompt configuration..."
+        
+        # Create prompts directory
+        mkdir -p .agentic-config/prompts
+        
+        # Copy default prompts from agentic-workflows
+        cp ../agentic-workflows/prompts/* .agentic-config/prompts/
+        
+        # Override with custom prompts if provided
+        if [ -n "${{ inputs.custom_implementation_prompt }}" ] && [ -f "${{ inputs.custom_implementation_prompt }}" ]; then
+          echo "✅ Using custom implementation prompt: ${{ inputs.custom_implementation_prompt }}"
+          cp "${{ inputs.custom_implementation_prompt }}" .agentic-config/prompts/implementation-prompt.md
+        else
+          echo "📋 Using default implementation prompt"
+        fi
+        
+        if [ -n "${{ inputs.custom_pr_prompt }}" ] && [ -f "${{ inputs.custom_pr_prompt }}" ]; then
+          echo "✅ Using custom PR prompt: ${{ inputs.custom_pr_prompt }}"
+          cp "${{ inputs.custom_pr_prompt }}" .agentic-config/prompts/pull_request_and_commit.md
+        else
+          echo "📋 Using default PR prompt"
+        fi
+        
+        # Aggregate custom rules if provided
+        if [ -n "${{ inputs.custom_rules_file }}" ] && [ -f "${{ inputs.custom_rules_file }}" ]; then
+          echo "✅ Including custom rules: ${{ inputs.custom_rules_file }}"
+          echo "" >> .agentic-config/prompts/implementation-prompt.md
+          echo "## Custom Project Rules" >> .agentic-config/prompts/implementation-prompt.md
+          echo "" >> .agentic-config/prompts/implementation-prompt.md
+          cat "${{ inputs.custom_rules_file }}" >> .agentic-config/prompts/implementation-prompt.md
+        fi
+        
+        # Include additional context files
+        if [ -n "${{ inputs.additional_context_files }}" ]; then
+          echo "✅ Including additional context files: ${{ inputs.additional_context_files }}"
+          echo "" >> .agentic-config/prompts/implementation-prompt.md
+          echo "## Additional Project Context" >> .agentic-config/prompts/implementation-prompt.md
+          echo "" >> .agentic-config/prompts/implementation-prompt.md
+          
+          IFS=',' read -ra FILES <<< "${{ inputs.additional_context_files }}"
+          for file in "${FILES[@]}"; do
+            file=$(echo "$file" | xargs)  # trim whitespace
+            if [ -f "$file" ]; then
+              echo "### $file" >> .agentic-config/prompts/implementation-prompt.md
+              echo '```' >> .agentic-config/prompts/implementation-prompt.md
+              cat "$file" >> .agentic-config/prompts/implementation-prompt.md
+              echo '```' >> .agentic-config/prompts/implementation-prompt.md
+              echo "" >> .agentic-config/prompts/implementation-prompt.md
+            fi
+          done
+        fi
+        
+        echo "📋 Final prompt configuration:"
+        ls -la .agentic-config/prompts/
+        
+    - name: Prepare request for Gemini CLI
+      run: |
+        cd target-repo
+        export PROMPTS_PATH=".agentic-config/prompts"
+        ../agentic-workflows/scripts/prepare-user-request.sh "${{ inputs.user_request }}" "outputs"
+
+    - name: Setup Gemini CLI environment
+      run: |
+        cd target-repo
+        ../agentic-workflows/scripts/setup-cli-env.sh "gemini" "${{ inputs.model }}" "${{ secrets.GEMINI_API_KEY }}"
+
+    - name: Generate PR details using direct Gemini API
+      run: |
+        cd target-repo
+        echo "🔧 Generating PR details using direct Gemini API..."
+        
+        # Export environment variables for API call
+        export GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}"
+        export PROMPTS_PATH=".agentic-config/prompts"
+        
+        # Use our direct API script for PR generation
+        if ../agentic-workflows/scripts/generate_pr_notes.sh "outputs/user-request.txt" "outputs"; then
+          echo "✅ PR details generation successful"
+          
+          # Verify pr_notes.json was created and is valid
+          if [ -f "outputs/pr_notes.json" ]; then
+            echo "✅ Found pr_notes.json file"
+            echo "📋 PR notes content:"
+            cat outputs/pr_notes.json
+          else
+            echo "❌ ERROR: pr_notes.json file was not created"
+            exit 1
+          fi
+        else
+          echo "❌ ERROR: PR generation failed"
+          exit 1
+        fi
+
+    - name: Implementation using Gemini CLI
+      id: gemini_implementation
+      run: |
+        cd target-repo
+        echo "🚀 Starting Gemini CLI Implementation"
+        
+        # Export environment variables for Gemini CLI
+        export GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}"
+        export PROMPTS_PATH=".agentic-config/prompts"
+        
+        # Configure debug logging based on input parameter
+        if [ "${{ inputs.enable_debug_logging }}" = "true" ]; then
+          echo "🔍 Debug logging ENABLED - comprehensive output will be shown"
+          export DEBUG=1
+          export DEBUG_MODE=1
+          export DEBUG="gemini*,@google/gemini-cli*"
+          export NODE_OPTIONS="--trace-warnings --max-old-space-size=8192"
+          export GEMINI_CLI_VERBOSE=true
+          export GEMINI_CLI_LOG_LEVEL=debug
+          export GEMINI_DEBUG_ENABLED=true
+        else
+          echo "🔇 Debug logging DISABLED - minimal output will be shown"
+          export NODE_OPTIONS="--max-old-space-size=8192"
+          export GEMINI_DEBUG_ENABLED=false
+        fi
+        
+        # Run implementation using our script with comprehensive logging
+        echo "🚀 Executing run-gemini.sh script with full logging..."
+        
+        # Capture both stdout and stderr with timestamps and timeout protection
+        set -x  # Enable command tracing
+        (
+          echo "=== GEMINI CLI EXECUTION START: $(date) ==="
+          echo "🕐 Timeout set to 25 minutes to prevent infinite loops"
+          
+          # Use timeout with kill signal after grace period
+          timeout --signal=TERM --kill-after=60s 25m ../agentic-workflows/scripts/run-gemini.sh "implementation" "outputs/user-request.txt" 2>&1 | while IFS= read -r line; do
+            echo "[$(date '+%H:%M:%S')] $line"
+          done
+          
+          TIMEOUT_EXIT=$?
+          echo "=== GEMINI CLI EXECUTION END: $(date) ==="
+          if [ $TIMEOUT_EXIT -eq 124 ]; then
+            echo "❌ TIMEOUT: Gemini CLI execution exceeded 25 minutes - likely in infinite loop"
+          elif [ $TIMEOUT_EXIT -eq 137 ]; then
+            echo "❌ KILLED: Gemini CLI process was forcefully terminated"
+          fi
+          exit $TIMEOUT_EXIT
+        ) | tee outputs/gemini-execution.log
+        IMPLEMENTATION_EXIT_CODE=${PIPESTATUS[0]}
+        set +x  # Disable command tracing
+        
+        echo "📋 Script exit code: $IMPLEMENTATION_EXIT_CODE"
+        
+        # Check if implementation was successful
+        if [ $IMPLEMENTATION_EXIT_CODE -eq 0 ]; then
+          echo "✅ Implementation completed successfully"
+          if [ -f "outputs/response.md" ]; then
+            echo "📄 Found response.md file"
+            IMPLEMENTATION_RESPONSE=$(cat outputs/response.md)
+            echo "gemini_response<<EOF" >> $GITHUB_OUTPUT
+            echo "$IMPLEMENTATION_RESPONSE" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ No response.md file found"
+            echo "gemini_response=Implementation completed but no response file found" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "❌ Implementation failed with exit code $IMPLEMENTATION_EXIT_CODE"
+          echo "gemini_response=Implementation FAILED with exit code $IMPLEMENTATION_EXIT_CODE" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create implementation summary and handle Git workflow
+      env:
+        IMPLEMENTATION_RESPONSE: ${{ steps.gemini_implementation.outputs.gemini_response }}
+        GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+      run: |
+        cd target-repo
+        # Save implementation summary for PR description
+        mkdir -p outputs/pr-summary
+        echo "$IMPLEMENTATION_RESPONSE" > outputs/pr-summary/implementation-summary.md
+        echo "📝 Implementation summary saved"
+        
+        # Read PR details from generated pr_notes.json (guaranteed to exist)
+        echo "📋 Reading PR details from pr_notes.json..."
+        
+        # Extract values using jq if available, otherwise use grep/sed
+        if command -v jq >/dev/null 2>&1; then
+          FULL_BRANCH_NAME=$(cat outputs/pr_notes.json | jq -r '.branchName')
+          COMMIT_MESSAGE=$(cat outputs/pr_notes.json | jq -r '.commitMessage' | tr '\n' ' ')
+          PR_TITLE=$(cat outputs/pr_notes.json | jq -r '.pullRequestTitle')
+        else
+          # Fallback parsing without jq
+          FULL_BRANCH_NAME=$(grep '"branchName"' outputs/pr_notes.json | sed 's/.*"branchName"[^"]*"\([^"]*\)".*/\1/' | head -1)
+          COMMIT_MESSAGE=$(grep '"commitMessage"' outputs/pr_notes.json | sed 's/.*"commitMessage"[^"]*"\([^"]*\)".*/\1/' | head -1 | tr '\n' ' ')
+          PR_TITLE=$(grep '"pullRequestTitle"' outputs/pr_notes.json | sed 's/.*"pullRequestTitle"[^"]*"\([^"]*\)".*/\1/' | head -1)
+        fi
+        
+        # Parse branch name to extract ticket and prefix (e.g., "api/DMC-413" -> prefix="api", ticket="DMC-413")
+        if [[ "$FULL_BRANCH_NAME" =~ ^([^/]+)/(.+)$ ]]; then
+          BRANCH_PREFIX="${BASH_REMATCH[1]}"
+          TICKET_NUMBER="${BASH_REMATCH[2]}"
+        else
+          # Fallback: try to extract DMC-XXX pattern
+          TICKET_NUMBER=$(echo "$FULL_BRANCH_NAME" | grep -o 'DMC-[0-9]\+' | head -1)
+          BRANCH_PREFIX="core"  # Default prefix
+        fi
+        
+        # Clean up commit message - remove excessive whitespace and truncate if too long
+        COMMIT_MESSAGE=$(echo "$COMMIT_MESSAGE" | sed 's/  */ /g' | cut -c1-200)
+        
+        echo "📋 Extracted PR details:"
+        echo "- Full Branch Name: $FULL_BRANCH_NAME"
+        echo "- Branch Prefix: $BRANCH_PREFIX"
+        echo "- Ticket Number: $TICKET_NUMBER"
+        echo "- Commit: $COMMIT_MESSAGE"
+        echo "- PR Title: $PR_TITLE"
+        
+        # Use our Git workflow script to handle the entire Git workflow
+        if WORKFLOW_OUTPUT=$(../agentic-workflows/scripts/git-workflow.sh "full-workflow" "$TICKET_NUMBER" "$COMMIT_MESSAGE" "$PR_TITLE" "$BRANCH_PREFIX" 2>&1); then
+          echo "✅ Git workflow completed successfully"
+          echo "$WORKFLOW_OUTPUT"
+        else
+          WORKFLOW_EXIT_CODE=$?
+          echo "❌ Git workflow failed with exit code $WORKFLOW_EXIT_CODE"
+          echo "📋 Git workflow output:"
+          echo "$WORKFLOW_OUTPUT"
+          exit $WORKFLOW_EXIT_CODE
+        fi
+        
+        # Extract environment variables from the git workflow output
+        if echo "$WORKFLOW_OUTPUT" | grep -q "HAS_CHANGES=true"; then
+          echo "HAS_CHANGES=true" >> $GITHUB_ENV
+          echo "✅ Changes detected - PR will be created"
+        else
+          echo "HAS_CHANGES=false" >> $GITHUB_ENV
+          echo "ℹ️ No changes detected - PR creation skipped"
+        fi
+        
+        if echo "$WORKFLOW_OUTPUT" | grep -q "BRANCH_NAME="; then
+          BRANCH_NAME=$(echo "$WORKFLOW_OUTPUT" | grep "BRANCH_NAME=" | cut -d'=' -f2)
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+          echo "📋 Branch name: $BRANCH_NAME"
+        fi
+        
+        if echo "$WORKFLOW_OUTPUT" | grep -q "PR_TITLE="; then
+          PR_TITLE=$(echo "$WORKFLOW_OUTPUT" | grep "PR_TITLE=" | cut -d'=' -f2)
+          echo "PR_TITLE=$PR_TITLE" >> $GITHUB_ENV
+          echo "📋 PR title: $PR_TITLE"
+        fi
+
+    - name: Create Pull Request
+      if: env.HAS_CHANGES == 'true'
+      env:
+        GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+      run: |
+        cd target-repo
+        BRANCH_NAME="${{ env.BRANCH_NAME }}"
+        PR_TITLE="${{ env.PR_TITLE }}"
+        BASE_BRANCH="${{ inputs.pr_base_branch }}"
+        
+        echo "🔍 PR Creation Debug:"
+        echo "- Branch: $BRANCH_NAME"
+        echo "- Title: $PR_TITLE"
+        echo "- Base: $BASE_BRANCH"
+        
+        # Get the implementation summary for PR body
+        if [ -f "outputs/pr-summary/implementation-summary.md" ]; then
+          PR_BODY_FILE="outputs/pr-summary/implementation-summary.md"
+        else
+          # Fallback to basic description
+          echo "# Gemini CLI Implementation" > /tmp/pr-body.md
+          echo "" >> /tmp/pr-body.md
+          echo "This PR was created automatically by Gemini CLI." >> /tmp/pr-body.md
+          echo "" >> /tmp/pr-body.md
+          echo "## Original Request" >> /tmp/pr-body.md
+          echo "" >> /tmp/pr-body.md
+          cat outputs/user-request.txt >> /tmp/pr-body.md
+          echo "" >> /tmp/pr-body.md
+          echo "## Implementation Details" >> /tmp/pr-body.md
+          echo "" >> /tmp/pr-body.md
+          echo "Changes were implemented using ${{ inputs.model }} model." >> /tmp/pr-body.md
+          PR_BODY_FILE="/tmp/pr-body.md"
+        fi
+        
+        # Create the pull request using GitHub CLI
+        echo "🚀 Creating pull request..."
+        if gh pr create \
+          --title "$PR_TITLE" \
+          --body-file "$PR_BODY_FILE" \
+          --base "$BASE_BRANCH" \
+          --head "$BRANCH_NAME"; then
+          echo "✅ Pull request created successfully!"
+          
+          # Try to add labels (non-critical if they fail)
+          echo "🏷️ Adding labels..."
+          gh pr edit "$BRANCH_NAME" --add-label "agentic-workflow-generated" || echo "⚠️ Could not add label 'agentic-workflow-generated'"
+          gh pr edit "$BRANCH_NAME" --add-label "automated-pr" || echo "⚠️ Could not add label 'automated-pr'"
+        else
+          echo "❌ Failed to create pull request"
+          exit 1
+        fi
+        
+        # Get the PR URL and number
+        PR_URL=$(gh pr view "$BRANCH_NAME" --json url --jq '.url')
+        PR_NUMBER=$(gh pr view "$BRANCH_NAME" --json number --jq '.number')
+        
+        echo "✅ Pull Request created successfully!"
+        echo "🔗 PR URL: $PR_URL"
+        echo "📋 PR Number: #$PR_NUMBER"
+        
+        # Store for summary
+        echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+        echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+
+    - name: Upload execution results as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: agentic-workflow-results-${{ github.run_number }}
+        path: |
+          target-repo/outputs/response.md
+          target-repo/outputs/response-log_*.txt
+          target-repo/outputs/implementation-prompt-combined.md
+          target-repo/outputs/user-request.txt
+          target-repo/outputs/pr_notes.json
+          target-repo/outputs/pr-generation-prompt.md
+          target-repo/outputs/gemini-execution.log
+        retention-days: 7
+        if-no-files-found: warn
+
+    - name: Display execution summary
+      env:
+        IMPLEMENTATION_RESPONSE: ${{ steps.gemini_implementation.outputs.gemini_response }}
+      run: |
+        # Display comprehensive summary
+        echo "## 🚀 Agentic Workflow Implementation Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Show request details
+        echo "### 📋 Request Details" >> $GITHUB_STEP_SUMMARY
+        echo "- **Model**: ${{ inputs.model }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Workflows Repo**: ${{ inputs.workflows_repo }}@${{ inputs.workflows_ref }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Show implementation results
+        if [ "${{ env.HAS_CHANGES }}" = "true" ]; then
+          echo "### ✅ Implementation Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: Implementation completed with changes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ env.BRANCH_NAME }}" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ env.PR_NUMBER }}" ]; then
+            echo "- **Pull Request**: [#${{ env.PR_NUMBER }}](${{ env.PR_URL }})" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Pull Request**: Creation in progress..." >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Show clean implementation summary from response.md
+          if [ -f "target-repo/outputs/response.md" ]; then
+            echo "### 📊 Implementation Summary" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            cat target-repo/outputs/response.md >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### 📝 Implementation Details" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "$IMPLEMENTATION_RESPONSE" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "### ℹ️ No Changes Made" >> $GITHUB_STEP_SUMMARY
+          echo "Agentic workflow completed execution but no code changes were necessary or made." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Show clean response from response.md if available
+          if [ -f "target-repo/outputs/response.md" ]; then
+            echo "### 📊 Implementation Analysis" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            cat target-repo/outputs/response.md >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### 📝 Response Details" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "$IMPLEMENTATION_RESPONSE" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
