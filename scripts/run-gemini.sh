@@ -13,8 +13,13 @@ MODEL="${4:-gemini-2.5-flash-preview-05-20}"
 USE_VERTEX_AI="${5:-false}"
 USE_GCA="${6:-false}"
 OUTPUT_DIR="${7:-outputs}"
+CUSTOM_LLM_PROXY="${8:-}"   # optional custom LLM proxy script (JS/Python)
 
-echo "🚀 Starting Gemini CLI $PHASE with model $MODEL (auto-approve tools)"
+if [ ! -z "$CUSTOM_LLM_PROXY" ]; then
+  echo "🚀 Starting Gemini CLI $PHASE with CUSTOM LLM via proxy: $(basename "$CUSTOM_LLM_PROXY")"
+else
+  echo "🚀 Starting Gemini CLI $PHASE with model $MODEL (auto-approve tools)"
+fi
 
 # Clean up previous files  
 rm -f "$OUTPUT_DIR/response.md"
@@ -54,6 +59,66 @@ cat > ~/.gemini/settings.json << 'EOF'
   }
 }
 EOF
+
+# Setup custom LLM proxy if provided
+PROXY_PID=""
+PROXY_PORT=""
+if [ ! -z "$CUSTOM_LLM_PROXY" ]; then
+    if [ ! -f "$CUSTOM_LLM_PROXY" ]; then
+        echo "❌ ERROR: Custom LLM proxy script not found: $CUSTOM_LLM_PROXY"
+        exit 1
+    fi
+    
+    echo "🔗 Setting up custom LLM proxy..."
+    
+    # Find available port
+    PROXY_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
+    
+    # Start proxy based on file extension
+    case "$CUSTOM_LLM_PROXY" in
+        *.js)
+            echo "🟨 Starting JavaScript proxy on port $PROXY_PORT..."
+            node "$CUSTOM_LLM_PROXY" --port "$PROXY_PORT" &
+            PROXY_PID=$!
+            ;;
+        *.py)
+            echo "🐍 Starting Python proxy on port $PROXY_PORT..."
+            python3 "$CUSTOM_LLM_PROXY" --port "$PROXY_PORT" &
+            PROXY_PID=$!
+            ;;
+        *)
+            echo "❌ ERROR: Unsupported proxy script format. Use .js or .py files."
+            exit 1
+            ;;
+    esac
+    
+    # Wait for proxy to start
+    echo "⏳ Waiting for proxy to start..."
+    sleep 2
+    
+    # Test proxy connectivity
+    if ! curl -s --max-time 5 "http://localhost:$PROXY_PORT/health" > /dev/null 2>&1; then
+        echo "⚠️ WARNING: Proxy health check failed. Continuing anyway..."
+    else
+        echo "✅ Proxy is ready on port $PROXY_PORT"
+    fi
+    
+    # Set environment variable for Gemini CLI to use proxy
+    export HTTP_PROXY="http://localhost:$PROXY_PORT"
+    export HTTPS_PROXY="http://localhost:$PROXY_PORT"
+    
+    # Function to cleanup proxy on exit
+    cleanup_proxy() {
+        if [ ! -z "$PROXY_PID" ]; then
+            echo "🧹 Cleaning up proxy (PID: $PROXY_PID)..."
+            kill "$PROXY_PID" 2>/dev/null || true
+            wait "$PROXY_PID" 2>/dev/null || true
+        fi
+    }
+    
+    # Register cleanup function
+    trap cleanup_proxy EXIT
+fi
 
 # Prepare prompt file based on phase
 PROMPTS_PATH=${PROMPTS_PATH:-"./prompts"}

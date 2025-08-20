@@ -1,0 +1,77 @@
+# Example GitHub Workflow using Custom LLM Proxy
+#
+# This example shows how to use OpenAI GPT-4 instead of Gemini
+# while keeping all the existing workflow functionality.
+
+name: AI Discovery with GPT-4
+
+on:
+  workflow_dispatch:
+    inputs:
+      user_request:
+        description: 'Your discovery request'
+        required: true
+        type: string
+      openai_model:
+        description: 'OpenAI model to use'
+        required: false
+        type: choice
+        default: 'gpt-4o'
+        options:
+          - gpt-4o
+          - gpt-4o-mini
+          - gpt-4-turbo
+          - gpt-4
+
+jobs:
+  ai-discovery-with-gpt4:
+    name: AI Discovery (GPT-4)
+    uses: IstiN/dmtools-agentic-workflows/.github/workflows/reusable-gemini-discovery.yml@main
+    with:
+      user_request: ${{ inputs.user_request }}
+      model: ${{ inputs.openai_model }}  # This becomes a label
+      enable_debug_logging: false
+      
+      # 🔥 KEY: Use custom LLM proxy for GPT-4
+      custom_llm_proxy: "examples/llm-proxies/openai-gpt4-proxy.js"
+      
+      # Optional: Use custom prompts for better GPT-4 results
+      custom_discovery_prompt: ".github/ai-prompts/gpt4-discovery-prompt.md"
+      
+    secrets:
+      # 🔥 KEY: Pass OpenAI key as Gemini key
+      GEMINI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    
+  ai-implementation-with-gpt4:
+    name: AI Implementation (GPT-4)
+    needs: ai-discovery-with-gpt4
+    uses: IstiN/dmtools-agentic-workflows/.github/workflows/reusable-gemini-implementation.yml@main
+    with:
+      user_request: "Implement the features discovered in the previous step"
+      model: ${{ inputs.openai_model }}
+      
+      # 🔥 KEY: Use custom LLM proxy for GPT-4
+      custom_llm_proxy: "examples/llm-proxies/openai-gpt4-proxy.py"
+      
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+# Environment Variables Required:
+# 
+# In your repository secrets, add:
+# - OPENAI_API_KEY: Your OpenAI API key
+#
+# In the proxy environment (set in proxy script or workflow):
+# - OPENAI_MODEL: Will be set by the proxy based on workflow input
+# - OPENAI_BASE_URL: Optional, for custom endpoints
+
+# How this works:
+# 
+# 1. Workflow calls reusable workflows normally
+# 2. Reusable workflow starts the specified proxy script
+# 3. Proxy intercepts all Gemini API calls
+# 4. Proxy translates requests to OpenAI format
+# 5. Proxy sends requests to OpenAI API
+# 6. Proxy translates responses back to Gemini format
+# 7. Gemini CLI receives responses as if from Gemini
+# 8. All existing functionality works unchanged!

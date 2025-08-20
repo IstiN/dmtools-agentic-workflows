@@ -44,6 +44,13 @@ on:
         required: false
         type: string
         default: ''
+      
+      # Custom LLM proxy
+      custom_llm_proxy:
+        description: 'Path to custom LLM proxy script (JS/Python) for using non-Gemini models like GPT-4'
+        required: false
+        type: string
+        default: ''
         
       # Workflow repo configuration
       workflows_repo:
@@ -230,7 +237,7 @@ jobs:
           echo "🕐 Timeout set to 25 minutes to prevent infinite loops"
           
           # Use timeout with kill signal after grace period
-          timeout --signal=TERM --kill-after=60s 25m ../agentic-workflows/scripts/run-gemini.sh "implementation" "outputs/user-request.txt" 2>&1 | while IFS= read -r line; do
+          timeout --signal=TERM --kill-after=60s 25m ../agentic-workflows/scripts/run-gemini.sh "implementation" "outputs/user-request.txt" "" "${{ inputs.model }}" false false "outputs" "${{ inputs.custom_llm_proxy }}" 2>&1 | while IFS= read -r line; do
             echo "[$(date '+%H:%M:%S')] $line"
           done
           
