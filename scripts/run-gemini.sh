@@ -43,7 +43,8 @@ export GOOGLE_GENAI_USE_VERTEXAI="$USE_VERTEX_AI"
 export GOOGLE_GENAI_USE_GCA="$USE_GCA"
 
 # Prepare prompt file based on phase
-PROMPT_FILE="cli_agents/prompts/${PHASE}-prompt.md"
+PROMPTS_PATH=${PROMPTS_PATH:-"./prompts"}
+PROMPT_FILE="$PROMPTS_PATH/${PHASE}-prompt.md"
 COMBINED_PROMPT_FILE="$OUTPUT_DIR/${PHASE}-prompt-combined.md"
 
 if [ ! -f "$PROMPT_FILE" ]; then

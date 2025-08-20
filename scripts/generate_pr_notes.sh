@@ -25,10 +25,11 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 # Prepare combined prompt
+PROMPTS_PATH=${PROMPTS_PATH:-"./prompts"}
 CURRENT_DIR=$(pwd)
 PROMPT_FILE="$OUTPUT_DIR/pr-generation-prompt.md"
 USER_REQUEST=$(cat "$USER_REQUEST_FILE")
-PR_RULES=$(cat "cli_agents/prompts/pull_request_and_commit.md")
+PR_RULES=$(cat "$PROMPTS_PATH/pull_request_and_commit.md")
 
 cat > "$PROMPT_FILE" << EOF
 # PR Details Generation Request
