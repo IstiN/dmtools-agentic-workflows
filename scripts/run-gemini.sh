@@ -42,49 +42,35 @@ esac
 export GOOGLE_GENAI_USE_VERTEXAI="$USE_VERTEX_AI"
 export GOOGLE_GENAI_USE_GCA="$USE_GCA"
 
-# Configure Gemini CLI for maximum token usage
-echo "🔧 Configuring Gemini CLI for maximum token usage..."
+# Configure Gemini CLI for optimal performance
+echo "🔧 Configuring Gemini CLI for optimal performance..."
 
 # Create .gemini directory if it doesn't exist
 mkdir -p ~/.gemini
 
-# Create optimized Gemini CLI configuration with maximum token limits
-cat > ~/.gemini/config.yaml << 'EOF'
-# Gemini CLI Configuration for Maximum Token Usage
-models:
-  default:
-    # Set maximum token budget (high value for large context processing)
-    tokenBudget: 2000000
-    # Set unlimited session turns (-1 means no limit)
-    maxSessionTurns: -1
-    # Enable maximum context window usage
-    maxContextTokens: 2000000
-    # Optimize for large content processing
-    temperature: 0.1
-    topP: 0.95
-    topK: 40
-
-# Session configuration for optimal performance
-session:
-  # Unlimited session turns for complex tasks
-  maxTurns: -1
-  # Large token budget for comprehensive analysis
-  tokenBudget: 2000000
-  # Enable context preservation across turns
-  preserveContext: true
-
-# Output configuration
-output:
-  # Enable verbose output for debugging
-  verbose: false
-  # Format responses as markdown
-  format: "markdown"
+# Create optimized Gemini CLI configuration based on official documentation
+cat > ~/.gemini/settings.json << 'EOF'
+{
+  "maxSessionTurns": -1,
+  "autoAccept": false,
+  "hideTips": true,
+  "hideBanner": true,
+  "showLineNumbers": true,
+  "chatCompression": {
+    "contextPercentageThreshold": 0.8
+  },
+  "usageStatisticsEnabled": false,
+  "telemetry": {
+    "enabled": false
+  }
+}
 EOF
 
-echo "✅ Gemini CLI configured with maximum token limits:"
-echo "  - Token Budget: 2,000,000"
+echo "✅ Gemini CLI configured for optimal performance:"
 echo "  - Max Session Turns: Unlimited (-1)"
-echo "  - Max Context Tokens: 2,000,000"
+echo "  - Chat Compression: 80% threshold"
+echo "  - Tips & Banner: Hidden for cleaner output"
+echo "  - Usage Statistics: Disabled"
 
 # Prepare prompt file based on phase
 PROMPTS_PATH=${PROMPTS_PATH:-"./prompts"}
@@ -205,7 +191,7 @@ echo "- Rules folder: ${RULES_FOLDER:-None}"
 echo "- Rules content: ${RULES_CONTENT:+$(echo "$RULES_CONTENT" | wc -l) lines} ${RULES_CONTENT:-None}"
 echo "- Combined prompt file size: $(wc -c < "$COMBINED_PROMPT_FILE") bytes"
 
-echo "🚀 Executing: gemini ${GEMINI_DEBUG_FLAG} --yolo --token-budget 2000000 --max-session-turns -1 --prompt <prompt_content>"
+echo "🚀 Executing: gemini ${GEMINI_DEBUG_FLAG} --yolo --prompt <prompt_content>"
 echo "📏 Prompt length: ${#COMBINED_PROMPT_CONTENT} characters"
 
 # Set Node.js options to handle event listener limits
@@ -224,7 +210,7 @@ fi
 
 # No process cleanup needed - single execution per workflow
 
-if GEMINI_RESPONSE=$(gemini $GEMINI_DEBUG_FLAG --yolo --token-budget 2000000 --max-session-turns -1 --prompt "$COMBINED_PROMPT_CONTENT" 2>&1); then
+if GEMINI_RESPONSE=$(gemini $GEMINI_DEBUG_FLAG --yolo --prompt "$COMBINED_PROMPT_CONTENT" 2>&1); then
     GEMINI_EXIT_CODE=0
     echo "✅ Gemini CLI execution successful"
     echo "📏 Response length: ${#GEMINI_RESPONSE} characters"
