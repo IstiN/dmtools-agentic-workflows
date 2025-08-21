@@ -313,10 +313,9 @@ jobs:
         DISCOVERY_RESPONSE: ${{ steps.gemini_discovery.outputs.gemini_response }}
       run: |
         cd target-repo
-        # Save discovery summary
+        # Create discovery summary directory
         mkdir -p outputs/discovery-summary
-        echo "$DISCOVERY_RESPONSE" > outputs/discovery-summary/discovery-analysis.md
-        echo "📝 Discovery summary saved"
+        echo "📝 Discovery summary directory created"
         
         # Create a comprehensive discovery report
         echo "# 🔍 Agentic Discovery Report" > outputs/discovery-summary/full-report.md
@@ -335,10 +334,11 @@ jobs:
         
         echo "## 🔍 Discovery Analysis" >> outputs/discovery-summary/full-report.md
         echo "" >> outputs/discovery-summary/full-report.md
-        if [ -f "outputs/response.md" ]; then
+        # Always read directly from response.md for most current content
+        if [ -f "outputs/response.md" ] && [ -s "outputs/response.md" ]; then
           cat outputs/response.md >> outputs/discovery-summary/full-report.md
         else
-          echo "$DISCOVERY_RESPONSE" >> outputs/discovery-summary/full-report.md
+          echo "⚠️ No response content available" >> outputs/discovery-summary/full-report.md
         fi
         
         echo "" >> outputs/discovery-summary/full-report.md
