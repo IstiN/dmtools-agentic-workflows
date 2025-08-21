@@ -14,17 +14,23 @@ USE_VERTEX_AI="${5:-false}"
 USE_GCA="${6:-false}"
 OUTPUT_DIR="${7:-outputs}"
 CUSTOM_LLM_PROXY="${8:-}"   # optional custom LLM proxy script (JS/Python)
+USE_VISUAL="${9:-false}"     # use visual interface instead of yolo mode
 
 if [ ! -z "$CUSTOM_LLM_PROXY" ]; then
   echo "🚀 Starting Gemini CLI $PHASE with CUSTOM LLM via proxy: $(basename "$CUSTOM_LLM_PROXY")"
 else
-  echo "🚀 Starting Gemini CLI $PHASE with model $MODEL (auto-approve tools)"
+  if [ "$USE_VISUAL" = "true" ]; then
+    echo "🚀 Starting Gemini CLI $PHASE with model $MODEL (VISUAL INTERFACE)"
+  else
+    echo "🚀 Starting Gemini CLI $PHASE with model $MODEL (auto-approve tools)"
+  fi
 fi
 
 # Clean up previous files  
 rm -f "$OUTPUT_DIR/response.md"
 rm -f "$OUTPUT_DIR"/response-log_*.txt
 rm -f "$OUTPUT_DIR"/*-prompt-combined.md
+rm -f temp/*.log
 
 # Validate phase
 case "$PHASE" in
@@ -43,10 +49,17 @@ export GOOGLE_GENAI_USE_GCA="$USE_GCA"
 # Configure Gemini CLI for optimal performance
 mkdir -p ~/.gemini
 
-cat > ~/.gemini/settings.json << 'EOF'
+# Set autoAccept based on visual mode
+if [ "$USE_VISUAL" = "true" ]; then
+    AUTO_ACCEPT="false"
+else
+    AUTO_ACCEPT="true"
+fi
+
+cat > ~/.gemini/settings.json << EOF
 {
   "maxSessionTurns": -1,
-  "autoAccept": true,
+  "autoAccept": $AUTO_ACCEPT,
   "hideTips": true,
   "hideBanner": true,
   "showLineNumbers": true,
@@ -60,64 +73,14 @@ cat > ~/.gemini/settings.json << 'EOF'
 }
 EOF
 
-# Setup custom LLM proxy if provided
-PROXY_PID=""
-PROXY_PORT=""
+# Validate custom LLM proxy if provided
 if [ ! -z "$CUSTOM_LLM_PROXY" ]; then
     if [ ! -f "$CUSTOM_LLM_PROXY" ]; then
         echo "❌ ERROR: Custom LLM proxy script not found: $CUSTOM_LLM_PROXY"
         exit 1
     fi
     
-    echo "🔗 Setting up custom LLM proxy..."
-    
-    # Find available port
-    PROXY_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
-    
-    # Start proxy based on file extension
-    case "$CUSTOM_LLM_PROXY" in
-        *.js)
-            echo "🟨 Starting JavaScript proxy on port $PROXY_PORT..."
-            node "$CUSTOM_LLM_PROXY" --port "$PROXY_PORT" &
-            PROXY_PID=$!
-            ;;
-        *.py)
-            echo "🐍 Starting Python proxy on port $PROXY_PORT..."
-            python3 "$CUSTOM_LLM_PROXY" --port "$PROXY_PORT" &
-            PROXY_PID=$!
-            ;;
-        *)
-            echo "❌ ERROR: Unsupported proxy script format. Use .js or .py files."
-            exit 1
-            ;;
-    esac
-    
-    # Wait for proxy to start
-    echo "⏳ Waiting for proxy to start..."
-    sleep 2
-    
-    # Test proxy connectivity
-    if ! curl -s --max-time 5 "http://localhost:$PROXY_PORT/health" > /dev/null 2>&1; then
-        echo "⚠️ WARNING: Proxy health check failed. Continuing anyway..."
-    else
-        echo "✅ Proxy is ready on port $PROXY_PORT"
-    fi
-    
-    # Set environment variable for Gemini CLI to use proxy
-    export HTTP_PROXY="http://localhost:$PROXY_PORT"
-    export HTTPS_PROXY="http://localhost:$PROXY_PORT"
-    
-    # Function to cleanup proxy on exit
-    cleanup_proxy() {
-        if [ ! -z "$PROXY_PID" ]; then
-            echo "🧹 Cleaning up proxy (PID: $PROXY_PID)..."
-            kill "$PROXY_PID" 2>/dev/null || true
-            wait "$PROXY_PID" 2>/dev/null || true
-        fi
-    }
-    
-    # Register cleanup function
-    trap cleanup_proxy EXIT
+    echo "🔗 Runtime proxy script found: $(basename "$CUSTOM_LLM_PROXY")"
 fi
 
 # Prepare prompt file based on phase
@@ -221,35 +184,51 @@ else
   GEMINI_DEBUG_FLAG=""
 fi
 
-if GEMINI_RESPONSE=$(gemini $GEMINI_DEBUG_FLAG --approval-mode yolo --prompt "$COMBINED_PROMPT_CONTENT" 2>&1); then
-    GEMINI_EXIT_CODE=0
-    echo "✅ Gemini CLI execution successful"
+# Set approval mode based on visual flag
+if [ "$USE_VISUAL" = "true" ]; then
+    APPROVAL_MODE=""  # No approval mode for visual interface
+else
+    APPROVAL_MODE="--approval-mode yolo"
+fi
+
+# Execute Gemini CLI with or without runtime proxy
+if [ ! -z "$CUSTOM_LLM_PROXY" ] && [ -f "$CUSTOM_LLM_PROXY" ]; then
+    echo "🔄 Using runtime proxy with fetch patching..."
+    echo "🎯 Proxy file: $CUSTOM_LLM_PROXY"
+    if [ "$USE_VISUAL" = "true" ]; then
+        echo "🎨 Using visual interface mode"
+    fi
+    GEMINI_RESPONSE=$(node --require "$CUSTOM_LLM_PROXY" $(which gemini) $GEMINI_DEBUG_FLAG $APPROVAL_MODE --prompt "$COMBINED_PROMPT_CONTENT" 2>&1)
+    GEMINI_EXIT_CODE=$?
+    USE_RUNTIME_PROXY=true
     
-    # Check if Gemini created the response.md file itself
-    if [ ! -f "$RESPONSE_FILE" ]; then
-        # Fallback: create response file from Gemini output (cleaned)
-        echo "$GEMINI_RESPONSE" | sed '/^(node:[0-9]*)/d' | sed '/Both GOOGLE_API_KEY and GEMINI_API_KEY are set/d' > "$RESPONSE_FILE"
+    if [ $GEMINI_EXIT_CODE -ne 0 ]; then
+        echo "❌ Runtime proxy failed with exit code: $GEMINI_EXIT_CODE"
+        echo "❌ Error output: $GEMINI_RESPONSE"
+        exit 1
     fi
 else
+    echo "🔄 Using standard Gemini CLI..."
+    if [ "$USE_VISUAL" = "true" ]; then
+        echo "🎨 Using visual interface mode"
+    fi
+    GEMINI_RESPONSE=$(gemini $GEMINI_DEBUG_FLAG $APPROVAL_MODE --prompt "$COMBINED_PROMPT_CONTENT" 2>&1)
     GEMINI_EXIT_CODE=$?
-    echo "❌ ERROR: Gemini CLI failed with exit code $GEMINI_EXIT_CODE"
+    USE_RUNTIME_PROXY=false
     
-    # Write error response to markdown file
-    cat > "$RESPONSE_FILE" << EOF
-# Error Response
+    if [ $GEMINI_EXIT_CODE -ne 0 ]; then
+        echo "❌ Gemini CLI failed with exit code: $GEMINI_EXIT_CODE"
+        echo "❌ Error output: $GEMINI_RESPONSE"
+        exit 1
+    fi
+fi
 
-**Generated:** $(date)
-**Phase:** $PHASE
-**Model:** $MODEL
-**Exit Code:** $GEMINI_EXIT_CODE
-
----
-
-## Error Output:
-\`\`\`
-$GEMINI_RESPONSE
-\`\`\`
-EOF
+echo "✅ Gemini CLI execution successful"
+    
+# Check if Gemini created the response.md file itself
+if [ ! -f "$RESPONSE_FILE" ]; then
+    # Fallback: create response file from Gemini output (cleaned)
+    echo "$GEMINI_RESPONSE" | sed '/^(node:[0-9]*)/d' | sed '/Both GOOGLE_API_KEY and GEMINI_API_KEY are set/d' > "$RESPONSE_FILE"
 fi
 
 # Create detailed log file for debugging

@@ -32,8 +32,8 @@ jobs:
       model: ${{ inputs.openai_model }}  # This becomes a label
       enable_debug_logging: false
       
-      # 🔥 KEY: Use custom LLM proxy for GPT-4
-      custom_llm_proxy: "examples/llm-proxies/openai-gpt4-proxy.js"
+      # 🔥 KEY: Use custom LLM proxy for GPT-4 (Runtime approach)
+      custom_llm_proxy: "examples/llm-proxies/openai-gpt4-runtime-proxy.js"
       
       # Optional: Use custom prompts for better GPT-4 results
       custom_discovery_prompt: ".github/ai-prompts/gpt4-discovery-prompt.md"
@@ -50,8 +50,8 @@ jobs:
       user_request: "Implement the features discovered in the previous step"
       model: ${{ inputs.openai_model }}
       
-      # 🔥 KEY: Use custom LLM proxy for GPT-4
-      custom_llm_proxy: "examples/llm-proxies/openai-gpt4-proxy.py"
+      # 🔥 KEY: Use custom LLM proxy for GPT-4 (Runtime approach)
+      custom_llm_proxy: "examples/llm-proxies/openai-gpt4-runtime-proxy.js"
       
     secrets:
       GEMINI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

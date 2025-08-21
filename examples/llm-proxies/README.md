@@ -4,20 +4,25 @@ This directory contains example proxy scripts that allow you to use custom LLMs 
 
 ## How It Works
 
-The proxy scripts intercept HTTP requests from Gemini CLI and redirect them to other LLM providers, translating the request/response formats as needed.
+The proxy scripts use **runtime fetch patching** to intercept API calls from Gemini CLI and redirect them to other LLM providers, translating the request/response formats as needed.
 
 ```
-Gemini CLI → HTTP Proxy → Custom LLM API → Response Translation → Gemini CLI
+Gemini CLI → Runtime Patched fetch() → Custom LLM API → Response Translation → Gemini CLI
 ```
 
 ## Available Proxies
 
 ### OpenAI GPT-4 Proxy
 
-- **JavaScript**: `openai-gpt4-proxy.js`
-- **Python**: `openai-gpt4-proxy.py`
+- **JavaScript Runtime Proxy**: `openai-gpt4-runtime-proxy.js` ⭐ **Recommended**
 
-Redirects Gemini CLI requests to OpenAI's GPT-4 models.
+Redirects Gemini CLI requests to OpenAI's GPT-4 models using runtime fetch patching.
+
+### Debug Proxy
+
+- **JavaScript Debug Proxy**: `debug-proxy.js` 🔧 **For Development**
+
+Logs all Gemini CLI requests with full details and returns fake responses in proper Gemini API format. Useful for understanding Gemini CLI behavior and testing proxy setup.
 
 ## Usage
 
@@ -36,11 +41,8 @@ The proxy script is passed as the 8th parameter to `run-gemini.sh`:
 # Basic usage with default Gemini
 ./scripts/run-gemini.sh discovery outputs/user-request.txt
 
-# Using custom OpenAI GPT-4 proxy (JavaScript)
-./scripts/run-gemini.sh discovery outputs/user-request.txt "" "gpt-4o" false false outputs examples/llm-proxies/openai-gpt4-proxy.js
-
-# Using custom OpenAI GPT-4 proxy (Python)
-./scripts/run-gemini.sh discovery outputs/user-request.txt "" "gpt-4o" false false outputs examples/llm-proxies/openai-gpt4-proxy.py
+# Using OpenAI GPT-4 with runtime proxy
+./scripts/run-gemini.sh discovery outputs/user-request.txt "" "gpt-4o" false false outputs examples/llm-proxies/openai-gpt4-runtime-proxy.js
 ```
 
 ### 3. Use with GitHub Actions
