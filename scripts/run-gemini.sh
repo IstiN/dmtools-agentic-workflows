@@ -176,12 +176,14 @@ echo "🚀 Executing Gemini CLI with auto-approval..."
 export NODE_OPTIONS="--max-old-space-size=4096 --max-http-header-size=8192"
 
 # Configure debug modes based on environment variable from workflow
-if [ "${GEMINI_DEBUG_ENABLED:-true}" = "true" ]; then
+if [ "${GEMINI_DEBUG_ENABLED:-false}" = "true" ]; then
   export DEBUG=1
   export DEBUG_MODE=1
   GEMINI_DEBUG_FLAG="--debug"
+  echo "🔍 DEBUG mode ENABLED - Gemini CLI will output debug information"
 else
   GEMINI_DEBUG_FLAG=""
+  echo "🔇 DEBUG mode DISABLED - Clean output mode"
 fi
 
 # Set approval mode based on visual flag
@@ -225,10 +227,13 @@ fi
 
 echo "✅ Gemini CLI execution successful"
     
-# Check if Gemini created the response.md file itself
+# Check if Gemini CLI created the response.md file
 if [ ! -f "$RESPONSE_FILE" ]; then
-    # Fallback: create response file from Gemini output (cleaned)
-    echo "$GEMINI_RESPONSE" | sed '/^(node:[0-9]*)/d' | sed '/Both GOOGLE_API_KEY and GEMINI_API_KEY are set/d' > "$RESPONSE_FILE"
+    echo "⚠️ Warning: Gemini CLI did not create response.md file"
+    echo "📝 Creating empty response.md as placeholder"
+    touch "$RESPONSE_FILE"
+else
+    echo "✅ Found response.md created by Gemini CLI ($(wc -c < "$RESPONSE_FILE") bytes)"
 fi
 
 # Create detailed log file for debugging

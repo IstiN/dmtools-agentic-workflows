@@ -177,6 +177,11 @@ jobs:
           echo "🔇 Debug logging DISABLED - minimal output will be shown"
           export NODE_OPTIONS="--max-old-space-size=8192"
           export GEMINI_DEBUG_ENABLED=false
+          # Explicitly disable debug variables to ensure clean output
+          unset DEBUG
+          unset DEBUG_MODE
+          unset GEMINI_CLI_VERBOSE
+          unset GEMINI_CLI_LOG_LEVEL
         fi
         
         # Run discovery using our simplified script with comprehensive logging
@@ -349,7 +354,7 @@ jobs:
     - name: Upload discovery results as artifact
       uses: actions/upload-artifact@v4
       with:
-        name: agentic-discovery-results-${{ github.run_number }}
+        name: agentic-discovery-response-results-${{ github.run_number }}
         path: |
           target-repo/outputs/response.md
           target-repo/outputs/response-log_*.txt
@@ -398,6 +403,6 @@ jobs:
         echo "### 📊 Artifacts" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "Discovery results and logs have been uploaded as workflow artifacts:" >> $GITHUB_STEP_SUMMARY
-        echo "- **Artifact Name**: agentic-discovery-results-${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Artifact Name**: agentic-discovery-response-results-${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Retention**: 14 days" >> $GITHUB_STEP_SUMMARY
         echo "- **Contents**: Discovery analysis, logs, and full report" >> $GITHUB_STEP_SUMMARY
