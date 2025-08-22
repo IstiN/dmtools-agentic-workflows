@@ -50,7 +50,7 @@ PROMPT_CONTENT=$(cat "$PROMPT_FILE")
 # Call Gemini API directly
 TEMP_RESPONSE="$OUTPUT_DIR/pr_temp_response.txt"
 
-if ./cli_agents/scripts/ask_gemini.sh "$PROMPT_CONTENT" "gemini-2.5-flash-preview-05-20" "$TEMP_RESPONSE"; then
+if ../agentic-workflows/scripts/ask_gemini.sh "$PROMPT_CONTENT" "gemini-2.5-flash-preview-05-20" "$TEMP_RESPONSE"; then
     echo "✅ Gemini API call successful"
     
     # Check if the response contains JSON

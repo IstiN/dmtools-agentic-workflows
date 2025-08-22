@@ -87,6 +87,7 @@ jobs:
       with:
         fetch-depth: 0
         path: target-repo
+        token: ${{ secrets.PAT_TOKEN }}
         
     - name: Checkout agentic workflows
       uses: actions/checkout@v4

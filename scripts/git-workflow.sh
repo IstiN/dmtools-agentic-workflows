@@ -164,6 +164,13 @@ full_workflow() {
     # Configure git user for commits
     git config user.name "cli-agent[bot]"
     git config user.email "cli-agent-bot@dmtools.local"
+    
+    # Configure git to use GitHub token for authentication if available
+    if [ -n "$GITHUB_TOKEN" ]; then
+        git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+        echo "✅ Git configured with GitHub token authentication"
+    fi
+    
     echo "✅ Git configured for CLI operations"
     
     # Determine branch prefix

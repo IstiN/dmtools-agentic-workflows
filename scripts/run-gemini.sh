@@ -107,7 +107,7 @@ USER_REQUEST=$(cat "$USER_REQUEST_FILE")
 # Aggregate rules if rules folder is provided
 RULES_CONTENT=""
 if [ ! -z "$RULES_FOLDER" ] && [ -d "$RULES_FOLDER" ]; then
-    RULES_SCRIPT="cli_agents/scripts/aggregate-rules.sh"
+    RULES_SCRIPT="../agentic-workflows/scripts/aggregate-rules.sh"
     if [ -f "$RULES_SCRIPT" ]; then
         RULES_CONTENT=$(bash "$RULES_SCRIPT" "$RULES_FOLDER" 2>/dev/null | grep -v "📋\|📄\|⚠️" || echo "")
     fi
