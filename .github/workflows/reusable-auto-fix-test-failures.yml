@@ -41,6 +41,11 @@ on:
         required: false
         type: string
         default: ''
+      additional_context_files:
+        description: 'Additional context files (comma-separated) from calling repo'
+        required: false
+        type: string
+        default: ''
         
       # Workflow repo configuration
       workflows_repo:
@@ -111,6 +116,7 @@ jobs:
       
       # Use existing capabilities
       custom_rules_file: ${{ inputs.custom_rules_file }}
+      additional_context_files: ${{ inputs.additional_context_files }}
       
       # Skip PR creation - commit and push directly
       skip_pr_creation: true
