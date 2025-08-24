@@ -27,6 +27,11 @@ on:
         required: false
         type: boolean
         default: false
+      enable_java_setup:
+        description: 'Enable Java 23 setup in target repository (for Java projects)'
+        required: false
+        type: boolean
+        default: false
       
       # Prompt override parameters
       custom_implementation_prompt:
@@ -108,6 +113,42 @@ jobs:
         repository: ${{ inputs.workflows_repo }}
         ref: ${{ inputs.workflows_ref }}
         path: agentic-workflows
+
+    - name: Setup Java 23 for target repository
+      if: ${{ inputs.enable_java_setup == true }}
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '23'
+        cache: 'gradle'
+
+    - name: Verify Java setup in target repository
+      if: ${{ inputs.enable_java_setup == true }}
+      working-directory: target-repo
+      run: |
+        echo "🔍 Verifying Java 23 setup in target repository..."
+        echo "JAVA_HOME: $JAVA_HOME"
+        java -version
+        javac -version
+        
+        echo "🔧 Testing Gradle with Java 23:"
+        ./gradlew -version || {
+          echo "❌ Gradle version check failed!"
+          echo "🔍 Available JVMs:"
+          ls -la /usr/lib/jvm/ || echo "No /usr/lib/jvm/ found"
+          ls -la /opt/hostedtoolcache/Java/ || echo "No /opt/hostedtoolcache/Java/ found"
+          exit 1
+        }
+        
+        echo "⚡ Test Java compilation:"
+        ./gradlew compileJava testClasses --info --stacktrace || {
+          echo "❌ Java compilation failed in target repo!"
+          echo "🔍 Gradle daemon info:"
+          ./gradlew --status || true
+          exit 1
+        }
+        
+        echo "✅ Java 23 setup verified in target repository!"
         
     - name: Setup Node.js environment
       uses: actions/setup-node@v4
