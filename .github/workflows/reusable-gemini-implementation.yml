@@ -95,6 +95,7 @@ jobs:
         fetch-depth: 0
         path: target-repo
         token: ${{ secrets.PAT_TOKEN }}
+        ref: ${{ inputs.skip_pr_creation == true && inputs.pr_base_branch || '' }}
         
     - name: Checkout agentic workflows
       uses: actions/checkout@v4
@@ -330,6 +331,7 @@ jobs:
         # Handle git workflow based on PR creation settings
         if [ "${{ inputs.skip_pr_creation }}" = "true" ]; then
           echo "🚀 Skipping PR creation - committing changes directly"
+          echo "🎯 Target branch: ${{ inputs.pr_base_branch }}"
           
           # Configure git
           git config --global user.name "github-actions[bot]"
