@@ -1,0 +1,147 @@
+name: Reusable Auto-fix Test Failures
+
+on:
+  workflow_call:
+    inputs:
+      # Test failure context
+      failure_context:
+        description: 'Test failure context and instructions for auto-fix'
+        required: true
+        type: string
+      branch_name:
+        description: 'Branch name where tests are failing'
+        required: true
+        type: string
+      workflow_run_url:
+        description: 'URL to the failed workflow run for detailed logs'
+        required: false
+        type: string
+        default: ''
+      pr_number:
+        description: 'Pull request number (if applicable)'
+        required: false
+        type: string
+        default: ''
+      
+      # AI Configuration
+      model:
+        description: 'Gemini model to use for auto-fix'
+        required: false
+        type: string
+        default: 'gemini-2.5-flash-preview-05-20'
+      enable_debug_logging:
+        description: 'Enable comprehensive debug logging for Gemini CLI'
+        required: false
+        type: boolean
+        default: true
+      
+      # Prompt customization parameters
+      custom_rules_file:
+        description: 'Custom rules file path in calling repo for test fixing'
+        required: false
+        type: string
+        default: ''
+        
+      # Workflow repo configuration
+      workflows_repo:
+        description: 'Repository containing agentic workflows'
+        required: false
+        type: string
+        default: 'IstiN/dmtools-agentic-workflows'
+      workflows_ref:
+        description: 'Git ref (branch/tag) of workflows repo to use'
+        required: false
+        type: string
+        default: 'main'
+        
+    secrets:
+      GEMINI_API_KEY:
+        description: 'Gemini API key for AI interactions'
+        required: true
+      PAT_TOKEN:
+        description: 'Personal access token for GitHub operations'
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  prepare-auto-fix-request:
+    runs-on: ubuntu-latest
+    outputs:
+      enhanced_request: ${{ steps.prepare.outputs.enhanced_request }}
+    steps:
+      - name: Prepare enhanced auto-fix request
+        id: prepare
+        run: |
+          # Prepare failure context for auto-fix prompt
+          cat > auto_fix_request.md << 'EOF'
+          # Auto-fix Test Failures Request
+          
+          ## Test Failure Context
+          ${{ inputs.failure_context }}
+          
+          ## Additional Context
+          
+          **Target Branch:** ${{ inputs.branch_name }}
+          **Workflow Run URL:** ${{ inputs.workflow_run_url }}
+          **Pull Request:** ${{ inputs.pr_number }}
+          EOF
+          
+          # Set output
+          ENHANCED_REQUEST=$(cat auto_fix_request.md)
+          echo "enhanced_request<<EOF" >> $GITHUB_OUTPUT
+          echo "$ENHANCED_REQUEST" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+  implement-auto-fix:
+    name: Auto-fix Implementation
+    needs: prepare-auto-fix-request
+    uses: IstiN/dmtools-agentic-workflows/.github/workflows/reusable-gemini-implementation.yml@main
+    with:
+      user_request: ${{ needs.prepare-auto-fix-request.outputs.enhanced_request }}
+      
+      # Use auto-fix specific prompt from prompts folder
+      custom_implementation_prompt: 'auto-fix-test-failures-prompt.md'
+      model: ${{ inputs.model }}
+      pr_base_branch: ${{ inputs.branch_name }}
+      enable_debug_logging: ${{ inputs.enable_debug_logging }}
+      
+      # Use existing capabilities
+      custom_rules_file: ${{ inputs.custom_rules_file }}
+      
+      # Skip PR creation - commit and push directly
+      skip_pr_creation: true
+      
+      # Workflow configuration  
+      workflows_repo: ${{ inputs.workflows_repo }}
+      workflows_ref: ${{ inputs.workflows_ref }}
+      
+    secrets:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+
+  add-pr-comment:
+    name: Add PR Comment
+    needs: [prepare-auto-fix-request, implement-auto-fix]
+    runs-on: ubuntu-latest
+    if: success() && inputs.pr_number != ''
+    steps:
+      - name: Add comment to original PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          gh api --method POST \
+            /repos/${{ github.repository }}/issues/${{ inputs.pr_number }}/comments \
+            --field body="🤖 **Auto-fix Applied**
+
+          Auto-fix changes have been pushed directly to this branch.
+
+          **Details:**
+          - 🛠️ AI analyzed test failures and implemented fixes  
+          - 🚀 Changes pushed to current branch
+          - 🔄 Tests will automatically re-run
+
+          The auto-fix should resolve the failing tests. Please wait for the test results to confirm."

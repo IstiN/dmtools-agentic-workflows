@@ -51,6 +51,13 @@ on:
         required: false
         type: string
         default: ''
+      
+      # PR creation control
+      skip_pr_creation:
+        description: 'Skip PR creation and just commit changes to the branch'
+        required: false
+        type: boolean
+        default: false
         
       # Workflow repo configuration
       workflows_repo:
@@ -118,9 +125,9 @@ jobs:
         cp ../agentic-workflows/prompts/* .agentic-config/prompts/
         
         # Override with custom prompts if provided
-        if [ -n "${{ inputs.custom_implementation_prompt }}" ] && [ -f "${{ inputs.custom_implementation_prompt }}" ]; then
+        if [ -n "${{ inputs.custom_implementation_prompt }}" ] && [ -f ".agentic-config/prompts/${{ inputs.custom_implementation_prompt }}" ]; then
           echo "✅ Using custom implementation prompt: ${{ inputs.custom_implementation_prompt }}"
-          cp "${{ inputs.custom_implementation_prompt }}" .agentic-config/prompts/implementation-prompt.md
+          cp ".agentic-config/prompts/${{ inputs.custom_implementation_prompt }}" .agentic-config/prompts/implementation-prompt.md
         else
           echo "📋 Using default implementation prompt"
         fi
@@ -320,41 +327,66 @@ jobs:
         echo "- Commit: $COMMIT_MESSAGE"
         echo "- PR Title: $PR_TITLE"
         
-        # Use our Git workflow script to handle the entire Git workflow
-        if WORKFLOW_OUTPUT=$(../agentic-workflows/scripts/git-workflow.sh "full-workflow" "$TICKET_NUMBER" "$COMMIT_MESSAGE" "$PR_TITLE" "$BRANCH_PREFIX" 2>&1); then
-          echo "✅ Git workflow completed successfully"
-          echo "$WORKFLOW_OUTPUT"
+        # Handle git workflow based on PR creation settings
+        if [ "${{ inputs.skip_pr_creation }}" = "true" ]; then
+          echo "🚀 Skipping PR creation - committing changes directly"
+          
+          # Configure git
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Commit and push changes
+          git add .
+          if git commit -m "$COMMIT_MESSAGE"; then
+            echo "✅ Changes committed directly"
+            echo "HAS_CHANGES=true" >> $GITHUB_ENV
+            
+            # Push changes to current branch
+            CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+            git push origin "$CURRENT_BRANCH"
+            echo "✅ Changes pushed to $CURRENT_BRANCH"
+            echo "BRANCH_NAME=$CURRENT_BRANCH" >> $GITHUB_ENV
+          else
+            echo "ℹ️ No changes to commit"
+            echo "HAS_CHANGES=false" >> $GITHUB_ENV
+          fi
         else
-          WORKFLOW_EXIT_CODE=$?
-          echo "❌ Git workflow failed with exit code $WORKFLOW_EXIT_CODE"
-          echo "📋 Git workflow output:"
-          echo "$WORKFLOW_OUTPUT"
-          exit $WORKFLOW_EXIT_CODE
-        fi
-        
-        # Extract environment variables from the git workflow output
-        if echo "$WORKFLOW_OUTPUT" | grep -q "HAS_CHANGES=true"; then
-          echo "HAS_CHANGES=true" >> $GITHUB_ENV
-          echo "✅ Changes detected - PR will be created"
-        else
-          echo "HAS_CHANGES=false" >> $GITHUB_ENV
-          echo "ℹ️ No changes detected - PR creation skipped"
-        fi
-        
-        if echo "$WORKFLOW_OUTPUT" | grep -q "BRANCH_NAME="; then
-          BRANCH_NAME=$(echo "$WORKFLOW_OUTPUT" | grep "BRANCH_NAME=" | cut -d'=' -f2)
-          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
-          echo "📋 Branch name: $BRANCH_NAME"
-        fi
-        
-        if echo "$WORKFLOW_OUTPUT" | grep -q "PR_TITLE="; then
-          PR_TITLE=$(echo "$WORKFLOW_OUTPUT" | grep "PR_TITLE=" | cut -d'=' -f2)
-          echo "PR_TITLE=$PR_TITLE" >> $GITHUB_ENV
-          echo "📋 PR title: $PR_TITLE"
+          # Use standard Git workflow script
+          if WORKFLOW_OUTPUT=$(../agentic-workflows/scripts/git-workflow.sh "full-workflow" "$TICKET_NUMBER" "$COMMIT_MESSAGE" "$PR_TITLE" "$BRANCH_PREFIX" 2>&1); then
+            echo "✅ Git workflow completed successfully"
+            echo "$WORKFLOW_OUTPUT"
+          else
+            WORKFLOW_EXIT_CODE=$?
+            echo "❌ Git workflow failed with exit code $WORKFLOW_EXIT_CODE"
+            echo "📋 Git workflow output:"
+            echo "$WORKFLOW_OUTPUT"
+            exit $WORKFLOW_EXIT_CODE
+          fi
+          
+          # Extract environment variables from the git workflow output
+          if echo "$WORKFLOW_OUTPUT" | grep -q "HAS_CHANGES=true"; then
+            echo "HAS_CHANGES=true" >> $GITHUB_ENV
+            echo "✅ Changes detected - PR will be created"
+          else
+            echo "HAS_CHANGES=false" >> $GITHUB_ENV
+            echo "ℹ️ No changes detected - PR creation skipped"
+          fi
+          
+          if echo "$WORKFLOW_OUTPUT" | grep -q "BRANCH_NAME="; then
+            BRANCH_NAME=$(echo "$WORKFLOW_OUTPUT" | grep "BRANCH_NAME=" | cut -d'=' -f2)
+            echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+            echo "📋 Branch name: $BRANCH_NAME"
+          fi
+          
+          if echo "$WORKFLOW_OUTPUT" | grep -q "PR_TITLE="; then
+            PR_TITLE=$(echo "$WORKFLOW_OUTPUT" | grep "PR_TITLE=" | cut -d'=' -f2)
+            echo "PR_TITLE=$PR_TITLE" >> $GITHUB_ENV
+            echo "📋 PR title: $PR_TITLE"
+          fi
         fi
 
     - name: Create Pull Request
-      if: env.HAS_CHANGES == 'true'
+      if: env.HAS_CHANGES == 'true' && inputs.skip_pr_creation != true
       env:
         GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
       run: |
@@ -451,7 +483,9 @@ jobs:
           echo "### ✅ Implementation Results" >> $GITHUB_STEP_SUMMARY
           echo "- **Status**: Implementation completed with changes" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch**: ${{ env.BRANCH_NAME }}" >> $GITHUB_STEP_SUMMARY
-          if [ -n "${{ env.PR_NUMBER }}" ]; then
+          if [ "${{ inputs.skip_pr_creation }}" = "true" ]; then
+            echo "- **PR Creation**: Skipped - changes committed to branch" >> $GITHUB_STEP_SUMMARY
+          elif [ -n "${{ env.PR_NUMBER }}" ]; then
             echo "- **Pull Request**: [#${{ env.PR_NUMBER }}](${{ env.PR_URL }})" >> $GITHUB_STEP_SUMMARY
           else
             echo "- **Pull Request**: Creation in progress..." >> $GITHUB_STEP_SUMMARY
