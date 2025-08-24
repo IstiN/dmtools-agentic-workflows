@@ -34,11 +34,7 @@ on:
         required: false
         type: boolean
         default: true
-      enable_java_setup:
-        description: 'Enable Java 23 setup in target repository (for Java projects)'
-        required: false
-        type: boolean
-        default: false
+
       
       # Prompt customization parameters
       custom_rules_file:
@@ -118,7 +114,6 @@ jobs:
       model: ${{ inputs.model }}
       pr_base_branch: ${{ inputs.branch_name }}
       enable_debug_logging: ${{ inputs.enable_debug_logging }}
-      enable_java_setup: ${{ inputs.enable_java_setup }}
       
       # Use existing capabilities
       custom_rules_file: ${{ inputs.custom_rules_file }}

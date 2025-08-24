@@ -27,11 +27,7 @@ on:
         required: false
         type: boolean
         default: false
-      enable_java_setup:
-        description: 'Enable Java 23 setup in target repository (for Java projects)'
-        required: false
-        type: boolean
-        default: false
+
       
       # Prompt override parameters
       custom_implementation_prompt:
@@ -114,8 +110,20 @@ jobs:
         ref: ${{ inputs.workflows_ref }}
         path: agentic-workflows
 
+    - name: Auto-detect and setup Java 23 if needed
+      run: |
+        cd target-repo
+        # Check if this is a Java project
+        if [ -f "build.gradle" ] || [ -f "build.gradle.kts" ] || [ -f "pom.xml" ]; then
+          echo "☕ Java project detected - setting up Java 23"
+          echo "SETUP_JAVA=true" >> $GITHUB_ENV
+        else
+          echo "📋 No Java project detected - skipping Java setup"
+          echo "SETUP_JAVA=false" >> $GITHUB_ENV
+        fi
+
     - name: Setup Java 23 for target repository
-      if: ${{ inputs.enable_java_setup == true }}
+      if: env.SETUP_JAVA == 'true'
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
@@ -123,7 +131,7 @@ jobs:
         cache: 'gradle'
 
     - name: Verify Java setup in target repository
-      if: ${{ inputs.enable_java_setup == true }}
+      if: env.SETUP_JAVA == 'true'
       working-directory: target-repo
       run: |
         echo "🔍 Verifying Java 23 setup in target repository..."
