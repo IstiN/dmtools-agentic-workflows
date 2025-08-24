@@ -128,7 +128,20 @@ jobs:
       with:
         distribution: 'temurin'
         java-version: '23'
-        cache: 'gradle'
+
+    - name: Setup Gradle cache for target repository
+      if: env.SETUP_JAVA == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          target-repo/.gradle/caches
+          target-repo/.gradle/wrapper
+        key: gradle-${{ runner.os }}-java23-${{ hashFiles('target-repo/gradle/wrapper/gradle-wrapper.properties', 'target-repo/**/*.gradle*', 'target-repo/**/gradle.properties') }}
+        restore-keys: |
+          gradle-${{ runner.os }}-java23-
+          gradle-${{ runner.os }}-
 
     - name: Verify Java setup in target repository
       if: env.SETUP_JAVA == 'true'
@@ -139,6 +152,11 @@ jobs:
         java -version
         javac -version
         
+        echo "💾 Gradle cache diagnostics:"
+        echo "~/.gradle/caches: $(ls -la ~/.gradle/caches/ 2>/dev/null | wc -l || echo '0') items"
+        echo "~/.gradle/wrapper: $(ls -la ~/.gradle/wrapper/ 2>/dev/null | wc -l || echo '0') items"
+        echo ".gradle/caches: $(ls -la .gradle/caches/ 2>/dev/null | wc -l || echo '0') items"
+        
         echo "🔧 Testing Gradle with Java 23:"
         ./gradlew -version || {
           echo "❌ Gradle version check failed!"
@@ -148,8 +166,8 @@ jobs:
           exit 1
         }
         
-        echo "⚡ Test Java compilation:"
-        ./gradlew compileJava testClasses --info --stacktrace || {
+        echo "⚡ Test Java compilation (with cache):"
+        time ./gradlew compileJava testClasses --info --stacktrace || {
           echo "❌ Java compilation failed in target repo!"
           echo "🔍 Gradle daemon info:"
           ./gradlew --status || true
