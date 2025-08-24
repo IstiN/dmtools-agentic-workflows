@@ -22,6 +22,11 @@ on:
         required: false
         type: boolean
         default: true
+      enable_action_logging:
+        description: 'Enable detailed Gemini action logging (telemetry to file)'
+        required: false
+        type: boolean
+        default: false
       
       # Prompt override parameters
       custom_implementation_prompt:
@@ -246,7 +251,7 @@ jobs:
           echo "🕐 Timeout set to 25 minutes to prevent infinite loops"
           
           # Use timeout with kill signal after grace period
-          timeout --signal=TERM --kill-after=60s 25m ../agentic-workflows/scripts/run-gemini.sh "implementation" "outputs/user-request.txt" "" "${{ inputs.model }}" false false "outputs" "${{ inputs.custom_llm_proxy }}" 2>&1 | while IFS= read -r line; do
+          timeout --signal=TERM --kill-after=60s 25m ../agentic-workflows/scripts/run-gemini.sh "implementation" "outputs/user-request.txt" "" "${{ inputs.model }}" false false "outputs" "${{ inputs.custom_llm_proxy }}" false "${{ inputs.enable_action_logging }}" 2>&1 | while IFS= read -r line; do
             echo "[$(date '+%H:%M:%S')] $line"
           done
           
@@ -463,6 +468,8 @@ jobs:
           target-repo/outputs/pr_notes.json
           target-repo/outputs/pr-generation-prompt.md
           target-repo/outputs/gemini-execution.log
+          target-repo/outputs/gemini-telemetry_*.json
+          target-repo/outputs/gemini-actions-summary_*.md
         retention-days: 7
         if-no-files-found: warn
 

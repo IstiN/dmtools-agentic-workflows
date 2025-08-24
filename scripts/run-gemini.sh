@@ -15,14 +15,20 @@ USE_GCA="${6:-false}"
 OUTPUT_DIR="${7:-outputs}"
 CUSTOM_LLM_PROXY="${8:-}"   # optional custom LLM proxy script (JS/Python)
 USE_VISUAL="${9:-false}"     # use visual interface instead of yolo mode
+ENABLE_LOGGING="${10:-false}" # enable detailed gemini action logging
+
+LOGGING_INFO=""
+if [ "$ENABLE_LOGGING" = "true" ]; then
+  LOGGING_INFO=" 📋 LOGGING ENABLED"
+fi
 
 if [ ! -z "$CUSTOM_LLM_PROXY" ]; then
-  echo "🚀 Starting Gemini CLI $PHASE with CUSTOM LLM via proxy: $(basename "$CUSTOM_LLM_PROXY")"
+  echo "🚀 Starting Gemini CLI $PHASE with CUSTOM LLM via proxy: $(basename "$CUSTOM_LLM_PROXY")$LOGGING_INFO"
 else
   if [ "$USE_VISUAL" = "true" ]; then
-    echo "🚀 Starting Gemini CLI $PHASE with model $MODEL (VISUAL INTERFACE)"
+    echo "🚀 Starting Gemini CLI $PHASE with model $MODEL (VISUAL INTERFACE)$LOGGING_INFO"
   else
-    echo "🚀 Starting Gemini CLI $PHASE with model $MODEL (auto-approve tools)"
+    echo "🚀 Starting Gemini CLI $PHASE with model $MODEL (auto-approve tools)$LOGGING_INFO"
   fi
 fi
 
@@ -30,6 +36,8 @@ fi
 rm -f "$OUTPUT_DIR/response.md"
 rm -f "$OUTPUT_DIR"/response-log_*.txt
 rm -f "$OUTPUT_DIR"/*-prompt-combined.md
+rm -f "$OUTPUT_DIR"/gemini-actions*.log
+rm -f "$OUTPUT_DIR"/gemini-telemetry*.json
 rm -f temp/*.log
 
 # Validate phase
@@ -68,7 +76,9 @@ cat > ~/.gemini/settings.json << EOF
   },
   "usageStatisticsEnabled": false,
   "telemetry": {
-    "enabled": false
+    "enabled": $([ "$ENABLE_LOGGING" = "true" ] && echo "true" || echo "false"),
+    "target": "local",
+    "logPrompts": true
   }
 }
 EOF
@@ -170,6 +180,15 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESPONSE_FILE="$OUTPUT_DIR/response.md"
 RESPONSE_LOG_FILE="$OUTPUT_DIR/response-log_${TIMESTAMP}.txt"
 
+# Set up logging files if enabled
+TELEMETRY_LOG_FILE=""
+GEMINI_TELEMETRY_FLAGS=""
+if [ "$ENABLE_LOGGING" = "true" ]; then
+    TELEMETRY_LOG_FILE="$OUTPUT_DIR/gemini-telemetry_${TIMESTAMP}.json"
+    GEMINI_TELEMETRY_FLAGS="--telemetry --telemetry-target=local --telemetry-otlp-endpoint=\"\" --telemetry-outfile=\"$TELEMETRY_LOG_FILE\""
+    echo "📋 Telemetry logging enabled - will write to: $TELEMETRY_LOG_FILE"
+fi
+
 echo "🚀 Executing Gemini CLI with auto-approval..."
 
 # Set Node.js options to handle event listener limits
@@ -200,7 +219,7 @@ if [ ! -z "$CUSTOM_LLM_PROXY" ] && [ -f "$CUSTOM_LLM_PROXY" ]; then
     if [ "$USE_VISUAL" = "true" ]; then
         echo "🎨 Using visual interface mode"
     fi
-    GEMINI_RESPONSE=$(node --require "$CUSTOM_LLM_PROXY" $(which gemini) $GEMINI_DEBUG_FLAG $APPROVAL_MODE --prompt "$COMBINED_PROMPT_CONTENT" 2>&1)
+    GEMINI_RESPONSE=$(node --require "$CUSTOM_LLM_PROXY" $(which gemini) $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1)
     GEMINI_EXIT_CODE=$?
     USE_RUNTIME_PROXY=true
     
@@ -214,7 +233,7 @@ else
     if [ "$USE_VISUAL" = "true" ]; then
         echo "🎨 Using visual interface mode"
     fi
-    GEMINI_RESPONSE=$(gemini $GEMINI_DEBUG_FLAG $APPROVAL_MODE --prompt "$COMBINED_PROMPT_CONTENT" 2>&1)
+    GEMINI_RESPONSE=$(gemini $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1)
     GEMINI_EXIT_CODE=$?
     USE_RUNTIME_PROXY=false
     
@@ -243,7 +262,11 @@ fi
     echo "Model: $MODEL"
     echo "Use Vertex AI: $USE_VERTEX_AI"
     echo "Use Gemini Code Assist: $USE_GCA"
+    echo "Logging Enabled: $ENABLE_LOGGING"
     echo "Timestamp: $TIMESTAMP"
+    if [ ! -z "$TELEMETRY_LOG_FILE" ]; then
+        echo "Telemetry Log: $TELEMETRY_LOG_FILE"
+    fi
     echo "=== USER REQUEST CONTENT ==="
     cat "$USER_REQUEST_FILE"
     echo "=== END USER REQUEST ==="
@@ -252,6 +275,57 @@ fi
     echo "=== GEMINI EXIT CODE: $GEMINI_EXIT_CODE ==="
     echo "=== EXECUTION END ==="
 } > "$RESPONSE_LOG_FILE"
+
+# Process telemetry log if enabled and file exists
+if [ "$ENABLE_LOGGING" = "true" ] && [ -f "$TELEMETRY_LOG_FILE" ]; then
+    echo "📋 Processing telemetry data..."
+    
+    # Create summary of actions from telemetry log
+    ACTIONS_SUMMARY_FILE="$OUTPUT_DIR/gemini-actions-summary_${TIMESTAMP}.md"
+    {
+        echo "# Gemini Actions Summary"
+        echo ""
+        echo "**Execution Time:** $(date)"
+        echo "**Phase:** $PHASE"
+        echo "**Model:** $MODEL"
+        echo ""
+        echo "## File Operations"
+        echo ""
+        # Extract file operations using jq if available
+        if command -v jq >/dev/null 2>&1; then
+            jq -r '
+            select(.name == "gemini_cli.tool_call" and .attributes.function_name == "write_file") |
+            "- **WRITE**: \(.attributes.function_args.file_path // "unknown") (\(.attributes.success // false | if . then "✅ SUCCESS" else "❌ FAILED" end))"
+            ' "$TELEMETRY_LOG_FILE" 2>/dev/null || echo "No write operations detected"
+            
+            jq -r '
+            select(.name == "gemini_cli.tool_call" and .attributes.function_name == "read_file") |
+            "- **READ**: \(.attributes.function_args.target_file // .attributes.function_args.file_path // "unknown") (\(.attributes.success // false | if . then "✅ SUCCESS" else "❌ FAILED" end))"
+            ' "$TELEMETRY_LOG_FILE" 2>/dev/null || echo "No read operations detected"
+            
+            jq -r '
+            select(.name == "gemini_cli.tool_call" and .attributes.function_name == "run_terminal_cmd") |
+            "- **COMMAND**: \(.attributes.function_args.command // "unknown") (\(.attributes.success // false | if . then "✅ SUCCESS" else "❌ FAILED" end))"
+            ' "$TELEMETRY_LOG_FILE" 2>/dev/null || echo "No command operations detected"
+        else
+            echo "jq not available - raw telemetry data saved to $TELEMETRY_LOG_FILE"
+        fi
+        echo ""
+        echo "## Raw Telemetry Data"
+        echo "Full telemetry log: \`$TELEMETRY_LOG_FILE\`"
+    } > "$ACTIONS_SUMMARY_FILE"
+    
+    echo "✅ Actions summary created: $ACTIONS_SUMMARY_FILE"
+    echo "📄 Full telemetry log: $TELEMETRY_LOG_FILE"
+    
+    # Output summary to console
+    if [ -f "$ACTIONS_SUMMARY_FILE" ]; then
+        echo ""
+        echo "=== GEMINI ACTIONS SUMMARY ==="
+        cat "$ACTIONS_SUMMARY_FILE"
+        echo "=== END ACTIONS SUMMARY ==="
+    fi
+fi
 
 # Output the response file path and exit code for use by calling script
 echo "$RESPONSE_FILE"
