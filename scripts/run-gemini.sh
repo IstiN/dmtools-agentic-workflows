@@ -1,7 +1,12 @@
 #!/bin/bash
 
 # run-gemini.sh - Execute Gemini CLI with specified parameters
-# Handles prompt preparation and execution
+# Features:
+# - Prompt preparation and execution
+# - Real-time quota exhaustion detection (stops retry loops immediately)
+# - Enhanced tool call visibility with emoji indicators
+# - Configurable execution timeout (default: 30 minutes)
+# - Smart output filtering (debug vs thinking mode)
 
 set -e
 
@@ -192,6 +197,10 @@ fi
 
 echo "🚀 Executing Gemini CLI with auto-approval..."
 
+# Set timeout for Gemini CLI execution (30 minutes max)
+GEMINI_TIMEOUT=${GEMINI_TIMEOUT:-1800}  # 30 minutes default
+echo "⏰ Setting execution timeout: ${GEMINI_TIMEOUT} seconds"
+
 # Set Node.js options to handle event listener limits and force unbuffered output
 export NODE_OPTIONS="--max-old-space-size=4096 --max-http-header-size=8192"
 
@@ -234,21 +243,55 @@ if [ ! -z "$CUSTOM_LLM_PROXY" ] && [ -f "$CUSTOM_LLM_PROXY" ]; then
     echo "💭 Showing thinking process in real-time..."
     echo "---"
     
-    # Use tee to both display and capture output
-    # Filter out debug noise if debug mode is not enabled, show only thinking process
-    if [ "${GEMINI_DEBUG_ENABLED:-false}" = "true" ]; then
-      stdbuf -oL -eL node --require "$CUSTOM_LLM_PROXY" $(which gemini) $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | tee "$TEMP_LOG_FILE"
-    else
-      # Filter out technical debug messages to show clean thinking process
-      # Use stdbuf to disable output buffering for real-time thinking process
-      stdbuf -oL -eL node --require "$CUSTOM_LLM_PROXY" $(which gemini) $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | \
-      stdbuf -oL -eL grep -v '^\[DEBUG\]' | \
-      stdbuf -oL -eL grep -v 'MaxListenersExceededWarning' | \
-      stdbuf -oL -eL grep -v 'Use `node --trace-warnings' | \
-      stdbuf -oL -eL grep -v 'Possible EventTarget memory leak' | \
-      tee "$TEMP_LOG_FILE"
-    fi
-    GEMINI_EXIT_CODE=${PIPESTATUS[0]}
+    # Execute with timeout, real-time quota monitoring and tool visibility
+    (
+      timeout "$GEMINI_TIMEOUT" stdbuf -oL -eL node --require "$CUSTOM_LLM_PROXY" $(which gemini) $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | \
+      while IFS= read -r line; do
+        # Real-time quota exhaustion detection - TERMINATE IMMEDIATELY
+        if echo "$line" | grep -q "status 429\|RESOURCE_EXHAUSTED\|quota.*exceeded\|Retrying with backoff"; then
+          echo ""
+          echo "🚨 QUOTA LIMIT DETECTED IN REAL-TIME - TERMINATING PROCESS"
+          echo "💳 QUOTA EXHAUSTED: API quota limit reached"
+          echo "❌ Error: Gemini API quota has been exceeded"
+          echo "📋 Details: Please check your billing and quota limits"
+          echo "⏰ Try again later when quota resets or upgrade your plan"
+          
+          # Kill the gemini process to stop retry loops
+          pkill -f "gemini.*--prompt" 2>/dev/null || true
+          exit 429
+        fi
+        
+        # Show line with smart filtering
+        if [ "${GEMINI_DEBUG_ENABLED:-false}" = "true" ]; then
+          # Debug mode: show everything
+          echo "$line"
+        else
+          # Filter noise but keep tool calls and thinking process visible
+          if echo "$line" | grep -v -E '^\[DEBUG\]|MaxListenersExceededWarning|Use.*node.*trace-warnings|Possible EventTarget memory leak' >/dev/null; then
+            # Highlight different types of operations for better visibility
+            if echo "$line" | grep -q "Error executing tool"; then
+              echo "❌ TOOL ERROR: $line"
+            elif echo "$line" | grep -q "executing tool.*read_file\|reading file"; then
+              echo "📖 READ: $line"
+            elif echo "$line" | grep -q "executing tool.*write\|executing tool.*edit\|writing file\|editing file"; then
+              echo "✏️ WRITE: $line"
+            elif echo "$line" | grep -q "executing tool.*run_terminal_cmd\|running command"; then
+              echo "💻 CMD: $line"
+            elif echo "$line" | grep -q "executing tool"; then
+              echo "🔧 TOOL: $line"
+            elif echo "$line" | grep -q "✅\|❌\|SUCCESS\|FAILED"; then
+              echo "📋 STATUS: $line"
+            else
+              echo "$line"
+            fi
+          fi
+        fi
+        
+        # Always save to log file
+        echo "$line" >> "$TEMP_LOG_FILE"
+      done
+    )
+    GEMINI_EXIT_CODE=$?
     
     # Check for quota exhausted errors in the output
     if [ -f "$TEMP_LOG_FILE" ] && grep -q "RESOURCE_EXHAUSTED\|quota.*exceeded\|status.*429" "$TEMP_LOG_FILE"; then
@@ -268,6 +311,10 @@ if [ ! -z "$CUSTOM_LLM_PROXY" ] && [ -f "$CUSTOM_LLM_PROXY" ]; then
         if [ $GEMINI_EXIT_CODE -eq 429 ]; then
             echo "💳 Quota exhausted - stopping execution to prevent infinite retry loop"
             exit 429
+        elif [ $GEMINI_EXIT_CODE -eq 124 ]; then
+            echo "⏰ TIMEOUT: Gemini CLI execution exceeded ${GEMINI_TIMEOUT} seconds"
+            echo "🔄 Recommendation: Reduce prompt complexity or increase timeout"
+            exit 124
         else
             echo "❌ Runtime proxy failed with exit code: $GEMINI_EXIT_CODE"
             if [ -f "$TEMP_LOG_FILE" ]; then
@@ -285,21 +332,55 @@ else
     echo "💭 Showing thinking process in real-time..."
     echo "---"
     
-    # Use tee to both display and capture output
-    # Filter out debug noise if debug mode is not enabled, show only thinking process
-    if [ "${GEMINI_DEBUG_ENABLED:-false}" = "true" ]; then
-      stdbuf -oL -eL gemini $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | tee "$TEMP_LOG_FILE"
-    else
-      # Filter out technical debug messages to show clean thinking process
-      # Use stdbuf to disable output buffering for real-time thinking process
-      stdbuf -oL -eL gemini $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | \
-      stdbuf -oL -eL grep -v '^\[DEBUG\]' | \
-      stdbuf -oL -eL grep -v 'MaxListenersExceededWarning' | \
-      stdbuf -oL -eL grep -v 'Use `node --trace-warnings' | \
-      stdbuf -oL -eL grep -v 'Possible EventTarget memory leak' | \
-      tee "$TEMP_LOG_FILE"
-    fi
-    GEMINI_EXIT_CODE=${PIPESTATUS[0]}
+    # Execute with timeout, real-time quota monitoring and tool visibility
+    (
+      timeout "$GEMINI_TIMEOUT" stdbuf -oL -eL gemini $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | \
+      while IFS= read -r line; do
+        # Real-time quota exhaustion detection - TERMINATE IMMEDIATELY
+        if echo "$line" | grep -q "status 429\|RESOURCE_EXHAUSTED\|quota.*exceeded\|Retrying with backoff"; then
+          echo ""
+          echo "🚨 QUOTA LIMIT DETECTED IN REAL-TIME - TERMINATING PROCESS"
+          echo "💳 QUOTA EXHAUSTED: API quota limit reached"
+          echo "❌ Error: Gemini API quota has been exceeded"
+          echo "📋 Details: Please check your billing and quota limits"
+          echo "⏰ Try again later when quota resets or upgrade your plan"
+          
+          # Kill the gemini process to stop retry loops
+          pkill -f "gemini.*--prompt" 2>/dev/null || true
+          exit 429
+        fi
+        
+        # Show line with smart filtering
+        if [ "${GEMINI_DEBUG_ENABLED:-false}" = "true" ]; then
+          # Debug mode: show everything
+          echo "$line"
+        else
+          # Filter noise but keep tool calls and thinking process visible
+          if echo "$line" | grep -v -E '^\[DEBUG\]|MaxListenersExceededWarning|Use.*node.*trace-warnings|Possible EventTarget memory leak' >/dev/null; then
+            # Highlight different types of operations for better visibility
+            if echo "$line" | grep -q "Error executing tool"; then
+              echo "❌ TOOL ERROR: $line"
+            elif echo "$line" | grep -q "executing tool.*read_file\|reading file"; then
+              echo "📖 READ: $line"
+            elif echo "$line" | grep -q "executing tool.*write\|executing tool.*edit\|writing file\|editing file"; then
+              echo "✏️ WRITE: $line"
+            elif echo "$line" | grep -q "executing tool.*run_terminal_cmd\|running command"; then
+              echo "💻 CMD: $line"
+            elif echo "$line" | grep -q "executing tool"; then
+              echo "🔧 TOOL: $line"
+            elif echo "$line" | grep -q "✅\|❌\|SUCCESS\|FAILED"; then
+              echo "📋 STATUS: $line"
+            else
+              echo "$line"
+            fi
+          fi
+        fi
+        
+        # Always save to log file
+        echo "$line" >> "$TEMP_LOG_FILE"
+      done
+    )
+    GEMINI_EXIT_CODE=$?
     
     # Check for quota exhausted errors in the output
     if [ -f "$TEMP_LOG_FILE" ] && grep -q "RESOURCE_EXHAUSTED\|quota.*exceeded\|status.*429" "$TEMP_LOG_FILE"; then
@@ -319,6 +400,10 @@ else
         if [ $GEMINI_EXIT_CODE -eq 429 ]; then
             echo "💳 Quota exhausted - stopping execution to prevent infinite retry loop"
             exit 429
+        elif [ $GEMINI_EXIT_CODE -eq 124 ]; then
+            echo "⏰ TIMEOUT: Gemini CLI execution exceeded ${GEMINI_TIMEOUT} seconds"
+            echo "🔄 Recommendation: Reduce prompt complexity or increase timeout"
+            exit 124
         else
             echo "❌ Gemini CLI failed with exit code: $GEMINI_EXIT_CODE"
             if [ -f "$TEMP_LOG_FILE" ]; then
