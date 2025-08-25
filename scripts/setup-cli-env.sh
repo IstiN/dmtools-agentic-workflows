@@ -50,10 +50,91 @@ case "$CLI_TOOL" in
         
     "gemini")
         echo "📦 Setting up Gemini CLI environment..."
-        npm install -g @google/gemini-cli@latest
-        echo "✅ Gemini CLI installed successfully"
+        
+        # Check if Gemini CLI is already available
+        if command -v gemini >/dev/null 2>&1; then
+            echo "✅ Gemini CLI found in cache, verifying..."
+            if gemini --version >/dev/null 2>&1; then
+                echo "✅ Gemini CLI is working, skipping installation"
+                gemini --version
+            else
+                echo "⚠️ Gemini CLI found but not working, reinstalling..."
+            fi
+        fi
+        
+        # Install Gemini CLI if not available or not working
+        if ! command -v gemini >/dev/null 2>&1 || ! gemini --version >/dev/null 2>&1; then
+            echo "📦 Installing Gemini CLI..."
+            
+            # Configure npm to use user directory for global installs
+            mkdir -p ~/.npm-global
+            npm config set prefix '~/.npm-global'
+            export PATH="$HOME/.npm-global/bin:$PATH"
+            
+            # Add to both bashrc and GitHub Actions PATH
+            echo "export PATH=\"\$HOME/.npm-global/bin:\$PATH\"" >> ~/.bashrc
+            if [ -n "$GITHUB_PATH" ]; then
+                echo "$HOME/.npm-global/bin" >> $GITHUB_PATH
+            fi
+            
+            # Set npm registry and configuration to avoid 403 errors
+            npm config set registry https://registry.npmjs.org/
+            npm config set fetch-retries 5
+            npm config set fetch-retry-mintimeout 20000
+            npm config set fetch-retry-maxtimeout 120000
+            
+            # Try installation with retries
+            max_attempts=3
+            attempt=1
+            
+            while [ $attempt -le $max_attempts ]; do
+                echo "📦 Installation attempt $attempt of $max_attempts..."
+                
+                if npm install -g @google/gemini-cli@latest --verbose; then
+                    echo "✅ Gemini CLI installed successfully on attempt $attempt"
+                    break
+                elif [ $attempt -eq $max_attempts ]; then
+                    echo "❌ Failed to install Gemini CLI after $max_attempts attempts"
+                    echo "🔄 Trying alternative installation method..."
+                    
+                    # Alternative: Install without cache and with different registry
+                    npm cache clean --force
+                    npm install -g @google/gemini-cli@latest --no-cache --registry https://registry.npmjs.org/ --verbose
+                    
+                    if [ $? -eq 0 ]; then
+                        echo "✅ Gemini CLI installed successfully via alternative method"
+                        break
+                    else
+                        echo "❌ All installation methods failed"
+                        exit 1
+                    fi
+                else
+                    echo "⚠️ Attempt $attempt failed, retrying in 10 seconds..."
+                    sleep 10
+                fi
+                
+                attempt=$((attempt + 1))
+            done
+        fi
+        
+        # Verify installation and ensure PATH is set
         echo "📋 Gemini CLI version:"
-        gemini --version
+        export PATH="$HOME/.npm-global/bin:$PATH"
+        
+        # Ensure gemini is available
+        if ! command -v gemini >/dev/null 2>&1; then
+            echo "⚠️ Gemini CLI not found in PATH, trying to locate..."
+            if [ -f "$HOME/.npm-global/bin/gemini" ]; then
+                echo "✅ Found Gemini CLI at $HOME/.npm-global/bin/gemini"
+                "$HOME/.npm-global/bin/gemini" --version
+            else
+                echo "❌ Gemini CLI installation verification failed"
+                ls -la "$HOME/.npm-global/bin/" || echo "Directory not found"
+                exit 1
+            fi
+        else
+            gemini --version
+        fi
         
         # Create settings file for Gemini CLI
         mkdir -p .gemini
