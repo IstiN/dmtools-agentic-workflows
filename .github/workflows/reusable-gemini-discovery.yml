@@ -188,14 +188,18 @@ jobs:
         echo "🔍 Executing run-gemini.sh script in discovery mode with full logging..."
         
         # Capture both stdout and stderr with timestamps and timeout protection
-        set -x  # Enable command tracing
+        # Don't use set -x as it clutters output with bash debug commands
         (
-          echo "=== GEMINI CLI DISCOVERY START: $(date) ==="
+          echo "🚀 GEMINI CLI DISCOVERY START: $(date)"
           echo "🕐 Timeout set to 25 minutes to prevent infinite loops"
+          echo "💭 Showing clean thinking process..."
+          echo "---"
           
           # Use timeout with kill signal after grace period
+          # Show clean output but still capture for analysis
           timeout --signal=TERM --kill-after=60s 25m ../agentic-workflows/scripts/run-gemini.sh "discovery" "outputs/user-request.txt" "" "${{ inputs.model }}" false false "outputs" "${{ inputs.custom_llm_proxy }}" 2>&1 | while IFS= read -r line; do
-            echo "[$(date '+%H:%M:%S')] $line"
+            # Don't add timestamps to thinking process lines, but detect important patterns
+            echo "$line"
             
             # Always check for critical error patterns
             if [[ "$line" == *"MaxListenersExceededWarning"* ]]; then
@@ -226,7 +230,8 @@ jobs:
           done
           
           TIMEOUT_EXIT=$?
-          echo "=== GEMINI CLI DISCOVERY END: $(date) ==="
+          echo "---"
+          echo "✅ GEMINI CLI DISCOVERY END: $(date)"
           if [ $TIMEOUT_EXIT -eq 124 ]; then
             echo "❌ TIMEOUT: Gemini CLI discovery exceeded 25 minutes - likely in infinite loop"
           elif [ $TIMEOUT_EXIT -eq 137 ]; then
@@ -235,7 +240,6 @@ jobs:
           exit $TIMEOUT_EXIT
         ) | tee outputs/gemini-discovery.log
         DISCOVERY_EXIT_CODE=${PIPESTATUS[0]}
-        set +x  # Disable command tracing
         
         echo "📋 Script exit code: $DISCOVERY_EXIT_CODE"
         
@@ -277,6 +281,12 @@ jobs:
             echo "⚠️ No response.md file found"
             echo "gemini_response=Discovery completed but no response file found" >> $GITHUB_OUTPUT
           fi
+        elif [ $DISCOVERY_EXIT_CODE -eq 429 ]; then
+          echo "💳 QUOTA EXHAUSTED: Gemini API quota limit reached"
+          echo "❌ Cannot proceed with discovery due to API quota limits"
+          echo "📋 Please check your billing and upgrade your plan or wait for quota reset"
+          echo "gemini_response=❌ API Quota Exhausted - Discovery cannot proceed. Please check your Gemini API billing and quota limits." >> $GITHUB_OUTPUT
+          exit 429
         else
           echo "❌ Discovery failed with exit code $DISCOVERY_EXIT_CODE"
           

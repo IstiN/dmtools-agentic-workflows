@@ -309,18 +309,20 @@ jobs:
         echo "🚀 Executing run-gemini.sh script with full logging..."
         
         # Capture both stdout and stderr with timestamps and timeout protection
-        set -x  # Enable command tracing
+        # Don't use set -x as it clutters output with bash debug commands
         (
-          echo "=== GEMINI CLI EXECUTION START: $(date) ==="
+          echo "🚀 GEMINI CLI EXECUTION START: $(date)"
           echo "🕐 Timeout set to 25 minutes to prevent infinite loops"
+          echo "💭 Showing clean thinking process..."
+          echo "---"
           
           # Use timeout with kill signal after grace period
-          timeout --signal=TERM --kill-after=60s 25m ../agentic-workflows/scripts/run-gemini.sh "implementation" "outputs/user-request.txt" "" "${{ inputs.model }}" false false "outputs" "${{ inputs.custom_llm_proxy }}" false "${{ inputs.enable_action_logging }}" 2>&1 | while IFS= read -r line; do
-            echo "[$(date '+%H:%M:%S')] $line"
-          done
+          # Don't add timestamps to each line - let Gemini output flow naturally
+          timeout --signal=TERM --kill-after=60s 25m ../agentic-workflows/scripts/run-gemini.sh "implementation" "outputs/user-request.txt" "" "${{ inputs.model }}" false false "outputs" "${{ inputs.custom_llm_proxy }}" false "${{ inputs.enable_action_logging }}"
           
           TIMEOUT_EXIT=$?
-          echo "=== GEMINI CLI EXECUTION END: $(date) ==="
+          echo "---"
+          echo "✅ GEMINI CLI EXECUTION END: $(date)"
           if [ $TIMEOUT_EXIT -eq 124 ]; then
             echo "❌ TIMEOUT: Gemini CLI execution exceeded 25 minutes - likely in infinite loop"
           elif [ $TIMEOUT_EXIT -eq 137 ]; then
@@ -329,7 +331,6 @@ jobs:
           exit $TIMEOUT_EXIT
         ) | tee outputs/gemini-execution.log
         IMPLEMENTATION_EXIT_CODE=${PIPESTATUS[0]}
-        set +x  # Disable command tracing
         
         echo "📋 Script exit code: $IMPLEMENTATION_EXIT_CODE"
         
@@ -346,6 +347,12 @@ jobs:
             echo "⚠️ No response.md file found"
             echo "gemini_response=Implementation completed but no response file found" >> $GITHUB_OUTPUT
           fi
+        elif [ $IMPLEMENTATION_EXIT_CODE -eq 429 ]; then
+          echo "💳 QUOTA EXHAUSTED: Gemini API quota limit reached"
+          echo "❌ Cannot proceed with implementation due to API quota limits"
+          echo "📋 Please check your billing and upgrade your plan or wait for quota reset"
+          echo "gemini_response=❌ API Quota Exhausted - Implementation cannot proceed. Please check your Gemini API billing and quota limits." >> $GITHUB_OUTPUT
+          exit 429
         else
           echo "❌ Implementation failed with exit code $IMPLEMENTATION_EXIT_CODE"
           echo "gemini_response=Implementation FAILED with exit code $IMPLEMENTATION_EXIT_CODE" >> $GITHUB_OUTPUT

@@ -249,17 +249,33 @@ if [ ! -z "$CUSTOM_LLM_PROXY" ] && [ -f "$CUSTOM_LLM_PROXY" ]; then
       tee "$TEMP_LOG_FILE"
     fi
     GEMINI_EXIT_CODE=${PIPESTATUS[0]}
+    
+    # Check for quota exhausted errors in the output
+    if [ -f "$TEMP_LOG_FILE" ] && grep -q "RESOURCE_EXHAUSTED\|quota.*exceeded\|status.*429" "$TEMP_LOG_FILE"; then
+      echo ""
+      echo "💳 QUOTA EXHAUSTED: API quota limit reached"
+      echo "❌ Error: Gemini API quota has been exceeded"
+      echo "📋 Details: Please check your billing and quota limits at:"
+      echo "    https://ai.google.dev/gemini-api/docs/rate-limits"
+      echo "⏰ Try again later when quota resets or upgrade your plan"
+      GEMINI_EXIT_CODE=429  # Set specific exit code for quota issues
+    fi
     USE_RUNTIME_PROXY=true
     
     echo "---"
     
     if [ $GEMINI_EXIT_CODE -ne 0 ]; then
-        echo "❌ Runtime proxy failed with exit code: $GEMINI_EXIT_CODE"
-        if [ -f "$TEMP_LOG_FILE" ]; then
-            echo "❌ Error output from log:"
-            tail -20 "$TEMP_LOG_FILE"
+        if [ $GEMINI_EXIT_CODE -eq 429 ]; then
+            echo "💳 Quota exhausted - stopping execution to prevent infinite retry loop"
+            exit 429
+        else
+            echo "❌ Runtime proxy failed with exit code: $GEMINI_EXIT_CODE"
+            if [ -f "$TEMP_LOG_FILE" ]; then
+                echo "❌ Error output from log:"
+                tail -20 "$TEMP_LOG_FILE"
+            fi
+            exit 1
         fi
-        exit 1
     fi
 else
     echo "🔄 Using standard Gemini CLI..."
@@ -284,17 +300,33 @@ else
       tee "$TEMP_LOG_FILE"
     fi
     GEMINI_EXIT_CODE=${PIPESTATUS[0]}
+    
+    # Check for quota exhausted errors in the output
+    if [ -f "$TEMP_LOG_FILE" ] && grep -q "RESOURCE_EXHAUSTED\|quota.*exceeded\|status.*429" "$TEMP_LOG_FILE"; then
+      echo ""
+      echo "💳 QUOTA EXHAUSTED: API quota limit reached"
+      echo "❌ Error: Gemini API quota has been exceeded"
+      echo "📋 Details: Please check your billing and quota limits at:"
+      echo "    https://ai.google.dev/gemini-api/docs/rate-limits"
+      echo "⏰ Try again later when quota resets or upgrade your plan"
+      GEMINI_EXIT_CODE=429  # Set specific exit code for quota issues
+    fi
     USE_RUNTIME_PROXY=false
     
     echo "---"
     
     if [ $GEMINI_EXIT_CODE -ne 0 ]; then
-        echo "❌ Gemini CLI failed with exit code: $GEMINI_EXIT_CODE"
-        if [ -f "$TEMP_LOG_FILE" ]; then
-            echo "❌ Error output from log:"
-            tail -20 "$TEMP_LOG_FILE"
+        if [ $GEMINI_EXIT_CODE -eq 429 ]; then
+            echo "💳 Quota exhausted - stopping execution to prevent infinite retry loop"
+            exit 429
+        else
+            echo "❌ Gemini CLI failed with exit code: $GEMINI_EXIT_CODE"
+            if [ -f "$TEMP_LOG_FILE" ]; then
+                echo "❌ Error output from log:"
+                tail -20 "$TEMP_LOG_FILE"
+            fi
+            exit 1
         fi
-        exit 1
     fi
 fi
 
