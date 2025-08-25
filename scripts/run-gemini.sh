@@ -192,19 +192,26 @@ fi
 
 echo "🚀 Executing Gemini CLI with auto-approval..."
 
-# Set Node.js options to handle event listener limits
+# Set Node.js options to handle event listener limits and force unbuffered output
 export NODE_OPTIONS="--max-old-space-size=4096 --max-http-header-size=8192"
 
+# Force unbuffered output for real-time thinking process display
+export PYTHONUNBUFFERED=1
+
 # Configure debug modes based on environment variable from workflow
+# By default, disable debug to show thinking process clearly
 if [ "${GEMINI_DEBUG_ENABLED:-false}" = "true" ]; then
-  export DEBUG=1
-  export DEBUG_MODE=1
   GEMINI_DEBUG_FLAG="--debug"
-  echo "🔍 DEBUG mode ENABLED - Gemini CLI will output debug information"
+  echo "🔍 DEBUG mode ENABLED - Technical debug information will be shown"
 else
   GEMINI_DEBUG_FLAG=""
-  echo "🔇 DEBUG mode DISABLED - Clean output mode"
+  echo "💭 THINKING mode ENABLED - Showing Gemini thinking process"
 fi
+
+# Don't export DEBUG variables as they pollute output with technical logs
+# We want to see thinking process, not internal debug information
+unset DEBUG
+unset DEBUG_MODE
 
 # Set approval mode based on visual flag
 if [ "$USE_VISUAL" = "true" ]; then
@@ -228,7 +235,19 @@ if [ ! -z "$CUSTOM_LLM_PROXY" ] && [ -f "$CUSTOM_LLM_PROXY" ]; then
     echo "---"
     
     # Use tee to both display and capture output
-    node --require "$CUSTOM_LLM_PROXY" $(which gemini) $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | tee "$TEMP_LOG_FILE"
+    # Filter out debug noise if debug mode is not enabled, show only thinking process
+    if [ "${GEMINI_DEBUG_ENABLED:-false}" = "true" ]; then
+      stdbuf -oL -eL node --require "$CUSTOM_LLM_PROXY" $(which gemini) $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | tee "$TEMP_LOG_FILE"
+    else
+      # Filter out technical debug messages to show clean thinking process
+      # Use stdbuf to disable output buffering for real-time thinking process
+      stdbuf -oL -eL node --require "$CUSTOM_LLM_PROXY" $(which gemini) $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | \
+      stdbuf -oL -eL grep -v '^\[DEBUG\]' | \
+      stdbuf -oL -eL grep -v 'MaxListenersExceededWarning' | \
+      stdbuf -oL -eL grep -v 'Use `node --trace-warnings' | \
+      stdbuf -oL -eL grep -v 'Possible EventTarget memory leak' | \
+      tee "$TEMP_LOG_FILE"
+    fi
     GEMINI_EXIT_CODE=${PIPESTATUS[0]}
     USE_RUNTIME_PROXY=true
     
@@ -251,7 +270,19 @@ else
     echo "---"
     
     # Use tee to both display and capture output
-    gemini $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | tee "$TEMP_LOG_FILE"
+    # Filter out debug noise if debug mode is not enabled, show only thinking process
+    if [ "${GEMINI_DEBUG_ENABLED:-false}" = "true" ]; then
+      stdbuf -oL -eL gemini $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | tee "$TEMP_LOG_FILE"
+    else
+      # Filter out technical debug messages to show clean thinking process
+      # Use stdbuf to disable output buffering for real-time thinking process
+      stdbuf -oL -eL gemini $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | \
+      stdbuf -oL -eL grep -v '^\[DEBUG\]' | \
+      stdbuf -oL -eL grep -v 'MaxListenersExceededWarning' | \
+      stdbuf -oL -eL grep -v 'Use `node --trace-warnings' | \
+      stdbuf -oL -eL grep -v 'Possible EventTarget memory leak' | \
+      tee "$TEMP_LOG_FILE"
+    fi
     GEMINI_EXIT_CODE=${PIPESTATUS[0]}
     USE_RUNTIME_PROXY=false
     
