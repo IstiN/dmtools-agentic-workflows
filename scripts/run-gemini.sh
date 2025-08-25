@@ -39,6 +39,7 @@ rm -f "$OUTPUT_DIR"/*-prompt-combined.md
 rm -f "$OUTPUT_DIR"/gemini-actions*.log
 rm -f "$OUTPUT_DIR"/gemini-telemetry*.json
 rm -f temp/*.log
+rm -f temp/gemini-realtime-*.log
 
 # Validate phase
 case "$PHASE" in
@@ -212,6 +213,10 @@ else
     APPROVAL_MODE="--approval-mode yolo"
 fi
 
+# Create temporary log file for capturing output while showing real-time
+TEMP_LOG_FILE="temp/gemini-realtime-${TIMESTAMP}.log"
+mkdir -p temp
+
 # Execute Gemini CLI with or without runtime proxy
 if [ ! -z "$CUSTOM_LLM_PROXY" ] && [ -f "$CUSTOM_LLM_PROXY" ]; then
     echo "🔄 Using runtime proxy with fetch patching..."
@@ -219,13 +224,22 @@ if [ ! -z "$CUSTOM_LLM_PROXY" ] && [ -f "$CUSTOM_LLM_PROXY" ]; then
     if [ "$USE_VISUAL" = "true" ]; then
         echo "🎨 Using visual interface mode"
     fi
-    GEMINI_RESPONSE=$(node --require "$CUSTOM_LLM_PROXY" $(which gemini) $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1)
-    GEMINI_EXIT_CODE=$?
+    echo "💭 Showing thinking process in real-time..."
+    echo "---"
+    
+    # Use tee to both display and capture output
+    node --require "$CUSTOM_LLM_PROXY" $(which gemini) $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | tee "$TEMP_LOG_FILE"
+    GEMINI_EXIT_CODE=${PIPESTATUS[0]}
     USE_RUNTIME_PROXY=true
+    
+    echo "---"
     
     if [ $GEMINI_EXIT_CODE -ne 0 ]; then
         echo "❌ Runtime proxy failed with exit code: $GEMINI_EXIT_CODE"
-        echo "❌ Error output: $GEMINI_RESPONSE"
+        if [ -f "$TEMP_LOG_FILE" ]; then
+            echo "❌ Error output from log:"
+            tail -20 "$TEMP_LOG_FILE"
+        fi
         exit 1
     fi
 else
@@ -233,15 +247,31 @@ else
     if [ "$USE_VISUAL" = "true" ]; then
         echo "🎨 Using visual interface mode"
     fi
-    GEMINI_RESPONSE=$(gemini $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1)
-    GEMINI_EXIT_CODE=$?
+    echo "💭 Showing thinking process in real-time..."
+    echo "---"
+    
+    # Use tee to both display and capture output
+    gemini $GEMINI_DEBUG_FLAG $APPROVAL_MODE $GEMINI_TELEMETRY_FLAGS --prompt "$COMBINED_PROMPT_CONTENT" 2>&1 | tee "$TEMP_LOG_FILE"
+    GEMINI_EXIT_CODE=${PIPESTATUS[0]}
     USE_RUNTIME_PROXY=false
+    
+    echo "---"
     
     if [ $GEMINI_EXIT_CODE -ne 0 ]; then
         echo "❌ Gemini CLI failed with exit code: $GEMINI_EXIT_CODE"
-        echo "❌ Error output: $GEMINI_RESPONSE"
+        if [ -f "$TEMP_LOG_FILE" ]; then
+            echo "❌ Error output from log:"
+            tail -20 "$TEMP_LOG_FILE"
+        fi
         exit 1
     fi
+fi
+
+# Read the captured output for logging purposes
+if [ -f "$TEMP_LOG_FILE" ]; then
+    GEMINI_RESPONSE=$(cat "$TEMP_LOG_FILE")
+else
+    GEMINI_RESPONSE="No output captured"
 fi
 
 echo "✅ Gemini CLI execution successful"
