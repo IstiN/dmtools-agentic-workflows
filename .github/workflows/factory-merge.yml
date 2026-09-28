@@ -130,7 +130,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
-          DMTOOLS_PACK_REGISTRY: "https://github.com/IstiN/dmtools-agents/releases/download/${{ env.AGENTS_TAG }}"
+          # SHELL $AGENTS_TAG (from $GITHUB_ENV in the resolve step) — NOT the
+          # ${{ env.AGENTS_TAG }} context: contexts evaluate at job start,
+          # before the resolve step ran, so the context form is EMPTY here
+          # (live: dmd dry tick 36486266207 — registry null, pack unresolved).
+          DMTOOLS_PACK_REGISTRY: "https://github.com/IstiN/dmtools-agents/releases/download/${AGENTS_TAG}"
         run: |
           repo='${{ github.repository }}'
           dry=""
