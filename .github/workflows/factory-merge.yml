@@ -1,0 +1,140 @@
+# Merge bot factory leg — REUSABLE workflow (dmtools-agentic-workflows:
+# the frozen machine-loop home).
+#
+# Migrated from IstiN/dmtools-agents factory-merge.yml (f377609) — the
+# agents-repo copy is DEPRECATED for new callers (kept only so existing
+# pinned users keep resolving their historical SHA).
+#
+# Why: the SM tick is cron */10 and GitHub cron is BEST-EFFORT — under load
+# scheduled runs silently vanish (live: fa ticks stopped for 30+ minutes
+# while approved green PRs waited to merge). The merge stage needs no
+# orchestration: its evidence (labels + concluded checks + mergeability)
+# is fully on the PR. This workflow runs the deterministic, idempotent
+# mergeBot.js on EVENTS so conclusions act within seconds:
+#
+#   workflow_run (the dispatched CI concluded)   — the primary trigger
+#   pull_request (labeled / synchronize / edited)— latch-relevant changes
+#   check_run (completed)                         — bridge mirrors conclude
+#   workflow_dispatch                             — manual / watchdog nudge
+#
+# The bot performs ONLY: approved+validating+green+CLEAN -> squash-merge
+# (one retry on transient refusals, full error surfacing); validating+
+# green+CLEAN+unapproved -> latch ai_validated; validating+green+stale
+# base -> unarm. Everything else stays SM-owned (no dispatches, no legs).
+# Overlap with the SM's merge-validated/validated-green rules is safe:
+# both sides are idempotent on the same labels; whoever runs first wins
+# and the other becomes a no-op.
+#
+# FREEZE CONTRACT: same as factory-sm.yml — agent code resolves from the
+# dmtools-agents RELEASE selected by the caller's vars.AGENTS_VERSION
+# ('latest' default), the CLI from vars.DMTOOLS_VERSION. Bumping either is
+# a repo-settings edit, never a workflow edit.
+#
+# Caller stub (machine-merge.yml in the target repo):
+#   on:
+#     workflow_run: {workflows: ['Quality'], types: [completed]}
+#     pull_request: {types: [labeled, synchronize, edited]}
+#     check_run: {types: [completed]}
+#     workflow_dispatch: {}
+#   jobs:
+#     merge:
+#       if: github.event_name != 'pull_request' || contains(github.event.label.name, 'ai_') || contains(github.event.label.name, 'pr_approved')
+#       uses: IstiN/dmtools-agentic-workflows/.github/workflows/factory-merge.yml@<ref>
+#       secrets:
+#         SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+
+name: 'Factory · Machine Merge Bot'
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'Runner label (self-hosted pools must be visible to the CALLING org)'
+        type: string
+        default: 'ubuntu-24.04'
+      dry-run:
+        description: "'true' to log the plan without acting (STRING — boolean-typed reusable inputs cannot take expressions)."
+        required: false
+        type: string
+        default: 'false'
+      ci_workflow:
+        description: "CI workflow FILE NAME this repo dispatches on PR heads (fa: ci.yml, dart: quality.yml) — the bot's workflow-run fallback reads its runs when a head carries no check runs (API silent-updated heads, live fa #762)."
+        required: false
+        type: string
+        default: 'ci.yml'
+
+    secrets:
+      SOURCE_GITHUB_TOKEN:
+        description: 'PAT with repo scope — GitHub API access for the merge bot (labels, PR state, checks, merge).'
+        required: true
+
+# NOTE: NO concurrency block here — deliberately. A called workflow's
+# concurrency NEVER applies (GitHub ignores it; only the caller's does),
+# and a caller + callee sharing the SAME group name makes every run fail
+# at startup with zero jobs and no annotations (live bisect 2026-09-22:
+# probes D-G green without it, H red with group name collision, H1 green
+# after rename). The caller stub owns the group (machine-merge-bot).
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  # Version knobs resolve from the CALLER's repository variables (vars.*
+  # resolve in the caller's context for reusable workflows).
+  AGENTS_VERSION: ${{ vars.AGENTS_VERSION || 'latest' }}
+  DMTOOLS_VERSION: ${{ vars.DMTOOLS_VERSION || 'latest' }}
+
+jobs:
+  merge:
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Resolve versions (agents release + dmtools CLI)
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+        run: |
+          resolve_tag() {
+            local repo="$1" knob="$2"
+            if [ "$knob" = "latest" ]; then
+              gh api "repos/${repo}/releases/latest" --jq .tag_name
+            else
+              gh api "repos/${repo}/releases/tags/${knob}" --jq .tag_name
+            fi
+          }
+          AGENTS_TAG="$(resolve_tag IstiN/dmtools-agents "$AGENTS_VERSION")"
+          DMTOOLS_TAG="$(resolve_tag epam/dmtools-dart "$DMTOOLS_VERSION")"
+          echo "AGENTS_TAG=${AGENTS_TAG}" >> "$GITHUB_ENV"
+          echo "DMTOOLS_TAG=${DMTOOLS_TAG}" >> "$GITHUB_ENV"
+          echo "agents pack release: ${AGENTS_TAG} (knob: ${AGENTS_VERSION})"
+          echo "dmtools CLI release: ${DMTOOLS_TAG} (knob: ${DMTOOLS_VERSION})"
+
+      - name: Install dmtools CLI (release bundle)
+        run: |
+          curl -fsSL "https://github.com/epam/dmtools-dart/releases/download/${DMTOOLS_TAG}/install.sh" \
+            -o /tmp/dmtools-install.sh
+          bash /tmp/dmtools-install.sh "${DMTOOLS_TAG}"
+          echo "$HOME/.dmtools/bin" >> "$GITHUB_PATH"
+
+      - name: Run the merge bot
+        # Runs as a VERSIONED AGENT PACK (machine_merge@latest): the pack
+        # carries mergeBot.js + its require() closure, sha256-verified
+        # against the release catalog. CWD = target repo root (config
+        # discovery parity with the old submodule checkout).
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          DMTOOLS_PACK_REGISTRY: "https://github.com/IstiN/dmtools-agents/releases/download/${{ env.AGENTS_TAG }}"
+        run: |
+          repo='${{ github.repository }}'
+          dry=""
+          if [ "${{ inputs.dry-run }}" = "true" ]; then dry=",\"dryRun\":true"; fi
+          CIWF="${{ inputs.ci_workflow }}"
+          override="{\"params\":{\"jobParams\":{\"repo\":\"${repo}\",\"ciWorkflow\":\"${CIWF}\"${dry}}}}"
+          dmtools run machine_merge@latest "$override"
