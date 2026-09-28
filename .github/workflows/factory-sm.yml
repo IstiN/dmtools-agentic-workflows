@@ -183,12 +183,8 @@ jobs:
           # Registry base = the resolved agents release's asset URL
           # directory: <base>/catalog.json maps agent→version, packs and
           # their .sha256 sidecars live at <base>/<name>-<version>.zip.
-          # SHELL $AGENTS_TAG (from $GITHUB_ENV in the resolve step) — NOT the
-          # ${{ env.AGENTS_TAG }} context: contexts evaluate at job start,
-          # before the resolve step ran, so the context form is EMPTY here
-          # (live: dmd dry tick 36486266207 — registry null, pack unresolved).
-          DMTOOLS_PACK_REGISTRY: "https://github.com/IstiN/dmtools-agents/releases/download/${AGENTS_TAG}"
         run: |
+          export DMTOOLS_PACK_REGISTRY="https://github.com/IstiN/dmtools-agents/releases/download/${AGENTS_TAG}"
           repo='${{ github.repository }}'
           # #687: silentToken powers update_branch localActions (github.token
           # pushes trigger no workflows); sourceToken restores the PAT after.
