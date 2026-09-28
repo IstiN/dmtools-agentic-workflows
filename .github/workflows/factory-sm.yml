@@ -92,13 +92,13 @@ on:
 # EXACTLY the set factory-sm.yml declares — mapping a secret the callee
 # does not declare is rejected at call time, a missing declared one fails
 # the guard test (factory_stub_ref_test.dart parity in each caller).
-secrets:
-  SOURCE_GITHUB_TOKEN:
-    description: "PAT for GitHub tool calls + gh CLI (SM engine + validation probes)."
-    required: true
-  SILENT_GH_TOKEN:
-    description: "Optional dedicated silent-update token; the silent-token input wins when both are set."
-    required: false
+    secrets:
+      SOURCE_GITHUB_TOKEN:
+        description: "PAT for GitHub tool calls + gh CLI (SM engine + validation probes)."
+        required: true
+      SILENT_GH_TOKEN:
+        description: "Optional dedicated silent-update token; the silent-token input wins when both are set."
+        required: false
 
 permissions:
   contents: write         # checkout + silent update-branch pushes
