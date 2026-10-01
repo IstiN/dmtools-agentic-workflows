@@ -430,6 +430,25 @@ jobs:
           path: factory-agents
           persist-credentials: false
 
+      - name: "Fetch factory kit (this repo @ invocation ref — immutable)"
+        # Trust-boundary scripts (git push guard, source PAT credentials)
+        # ride the SAME immutable ref the caller invoked this workflow at
+        # (github.workflow_ref = owner/repo/.github/workflows/<name>.yml@<ref>)
+        # — a PR head can no longer supply them (self-host security,
+        # 2026-10-01) and the script version can never skew from the workflow
+        # version that calls it. Plain git (no action): GitLab-portable.
+        env:
+          AWF_REF: ${{ github.workflow_ref }}
+        run: |
+          ref="${AWF_REF##*@}"
+          dir="${GITHUB_WORKSPACE}/factory-kit"
+          git init -q "$dir"
+          git -C "$dir" remote add origin https://github.com/IstiN/dmtools-agentic-workflows.git
+          git -C "$dir" fetch -q --depth 1 origin "$ref" \
+            || { echo "::warning::kit fetch failed — falling back to factory-agents copies"; exit 0; }
+          git -C "$dir" checkout -q FETCH_HEAD -- kit/
+          [ -f "$dir/kit/git-push-guard.sh" ] || { echo "::warning::kit incomplete at $ref — falling back"; rm -rf "$dir"; }
+
       - name: Export fa session identity + cache keys
         env:
           AI_TEAMMATE_CONFIG_FILE: ${{ needs.guard.outputs.config }}
@@ -570,7 +589,8 @@ jobs:
         # shared installer — one copy serves every push path in the job).
         env:
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
-        run: bash factory-agents/setup/install-source-git-credentials.sh
+        run: bash factory-kit/kit/install-source-git-credentials.sh 2>/dev/null \
+            || bash factory-agents/setup/install-source-git-credentials.sh
 
       - name: Trace git credential stack (push-time evidence)
         # gh-63 Task 1 — same run that pushes, right before the agent.
@@ -775,7 +795,9 @@ jobs:
           # steps (session-branch persistence) push legitimately.
           GIT_GUARD_BIN="${RUNNER_TEMP:-/tmp}/git-push-guard-bin"
           mkdir -p "${GIT_GUARD_BIN}"
-          ln -sf "${GITHUB_WORKSPACE}/factory-agents/scripts/git-push-guard.sh" "${GIT_GUARD_BIN}/git"
+          GUARD="${GITHUB_WORKSPACE}/factory-kit/kit/git-push-guard.sh"
+          [ -f "$GUARD" ] || GUARD="${GITHUB_WORKSPACE}/factory-agents/scripts/git-push-guard.sh"
+          ln -sf "$GUARD" "${GIT_GUARD_BIN}/git"
           export PATH="${GIT_GUARD_BIN}:${PATH}"
           git --version  # resolves through the shim — proves the wiring
           # FULL session trace: FA_LOG_FILE tees every line fa prints to the
@@ -1170,7 +1192,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
         run: |
-          bash factory-agents/setup/install-source-git-credentials.sh
+          bash factory-kit/kit/install-source-git-credentials.sh 2>/dev/null \
+            || bash factory-agents/setup/install-source-git-credentials.sh
           echo "── post-agent extraheader trace (must be empty) ──"
           git config --show-origin --get-all http.https://github.com/.extraheader | sed -E 's/^([^\t]*\t).*/\1<redacted>/; t; s/.+/<redacted> (unexpected line without origin)/' || true
           if git config --get-all http.https://github.com/.extraheader | grep -q .; then
