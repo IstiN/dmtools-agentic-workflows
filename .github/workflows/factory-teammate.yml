@@ -542,6 +542,11 @@ jobs:
             mkdir -p "${HOME}/.local/bin" "${HOME}/.local/lib"
             cp "${tmp}/bundle/bin/fa" "${HOME}/.local/bin/fa"
             chmod +x "${HOME}/.local/bin/fa"
+            # version.txt next to the binary — _packageVersion probes
+            # <exe_dir>/version.txt; without it the CLI reports the 0.1.0
+            # fallback and every session reinstalls (2026-10-01 loop).
+            [ -f "${tmp}/bundle/version.txt" ] \
+              && cp "${tmp}/bundle/version.txt" "${HOME}/.local/bin/version.txt"
             cp -R "${tmp}/bundle/lib/." "${HOME}/.local/lib/" 2>/dev/null || true
           fi
           bash factory-agents/setup/install.sh "fa:${FA_VERSION}"
