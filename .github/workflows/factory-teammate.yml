@@ -364,7 +364,11 @@ jobs:
             # from its basename (dev-write vs dev-review).
             # Parent pipeline by SLOT — custom runners (config overrides)
             # inherit the leg's pipeline, so a repo can swap the agent
-            # without losing session/verdict semantics.
+            # without losing session/verdict semantics. The value below is
+            # the LEGACY tree path; the teammate job re-resolves it pack-first
+            # (Wave 2: an unpacked pack's launch.json WINS — see the
+            # "Resolve parent config" step; this fallback keeps old pins
+            # working when no Wave-2 pack is unpacked).
             case "$slot" in
               bug)     config="factory-agents/bug_development.json"; kind="dev" ;;
               story)   config="factory-agents/story_development.json"; kind="dev" ;;
@@ -449,9 +453,40 @@ jobs:
           git -C "$dir" checkout -q FETCH_HEAD -- kit/
           [ -f "$dir/kit/git-push-guard.sh" ] || { echo "::warning::kit incomplete at $ref — falling back"; rm -rf "$dir"; }
 
-      - name: Export fa session identity + cache keys
+      - name: "Resolve parent config (pack launch.json wins, tree fallback)"
+        # Wave 2 (owner 2026-10-01): teammate packs are self-sufficient —
+        # the unpacked pack's launch.json IS the launch contract and WINS
+        # over the legacy tree copy. Pack cache root (dmtools
+        # AgentPackResolver): ~/.dmtools/packs/<agent>-<version>/ —
+        # populated by `dmtools run` resolving a <agent>@latest parent, so
+        # it is visible here on persistent-HOME/self-hosted runners and to
+        # every step AFTER the agent run; fresh hosted runners fall back to
+        # the legacy tree config until the run unpacks the pack. Neither
+        # source present ⇒ loud fail (old pin without tree configs and
+        # without a Wave-2 pack). fa-session.sh/run-agent.sh derive the
+        # agent identity from the pack DIR, so naming stays stable either
+        # way. Plain bash: GitLab-portable.
         env:
-          AI_TEAMMATE_CONFIG_FILE: ${{ needs.guard.outputs.config }}
+          LEGACY_CONFIG: ${{ needs.guard.outputs.config }}
+        run: |
+          set -eu
+          agent="$(basename "${LEGACY_CONFIG}" .json)"
+          pack_launch="$(ls -1 "${HOME}"/.dmtools/packs/"${agent}"-*/launch.json 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -n "${pack_launch}" ]; then
+            echo "→ pack launch.json wins: ${pack_launch}"
+            echo "AI_TEAMMATE_CONFIG_FILE=${pack_launch}" >> "$GITHUB_ENV"
+          elif [ -f "${LEGACY_CONFIG}" ]; then
+            echo "→ no unpacked ${agent} pack launch.json — legacy tree config: ${LEGACY_CONFIG}"
+            echo "AI_TEAMMATE_CONFIG_FILE=${LEGACY_CONFIG}" >> "$GITHUB_ENV"
+          else
+            echo "::error::no parent config for '${agent}': neither ~/.dmtools/packs/${agent}-*/launch.json nor legacy ${LEGACY_CONFIG} exists — the pin has neither Wave-2 packs nor the tree configs"
+            exit 1
+          fi
+
+      - name: Export fa session identity + cache keys
+        # AI_TEAMMATE_CONFIG_FILE comes from the resolve step above
+        # (pack launch.json wins) via GITHUB_ENV.
+        env:
           AI_TEAMMATE_DISPLAY_KEY: GH-${{ needs.guard.outputs.anchor }}
           AI_TEAMMATE_CONCURRENCY_KEY: ${{ needs.guard.outputs.anchor }}
         run: bash factory-agents/setup/cache.sh keys fa-session
@@ -773,7 +808,8 @@ jobs:
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUNNER: ${{ needs.guard.outputs.runner }}
           AI_AGENT_PROVIDER: fa
-          AI_TEAMMATE_CONFIG_FILE: ${{ needs.guard.outputs.config }}
+          # AI_TEAMMATE_CONFIG_FILE rides GITHUB_ENV from the resolve step
+          # (pack launch.json wins, legacy tree fallback).
           AI_TEAMMATE_DISPLAY_KEY: GH-${{ needs.guard.outputs.anchor }}
           AI_TEAMMATE_CONCURRENCY_KEY: ${{ needs.guard.outputs.anchor }}
           ZAI_CODE_KEY: ${{ secrets.ZAI_CODE_KEY }}
@@ -969,8 +1005,9 @@ jobs:
         #   machine-written issue comments → LOUD failure
         # No verdict anywhere ⇒ ::error:: + needs-human + per-source
         # diagnosis comment + exit 1 (the cycle is stranded; a human must
-        # label it). gh calls stay in this step; the parser
-        # (factory-agents/setup/review-verdict.sh) stays pure.
+        # label it). gh calls stay in this step; the parser stays pure —
+        # pack loop/verdict.sh first (Wave 2), legacy tree
+        # factory-agents/setup/review-verdict.sh fallback.
         # The CI-green gate applies to the APPROVE path only: gating rework
         # on green CI would deadlock exactly when CI is red because the code
         # needs rework. A PAT is REQUIRED for labeling (mute GITHUB_TOKEN).
@@ -1022,6 +1059,21 @@ jobs:
           if [ -z "${MACHINE_AUTHOR:-}" ] && [ -r .dmtools/config.js ]; then
             MACHINE_AUTHOR="$(sed -nE 's/.*machineAuthor["'\'']?[[:space:]]*:[[:space:]]*["'\'']([A-Za-z0-9._-]+)["'\''].*/\1/p' .dmtools/config.js | head -1)"
           fi
+          # Wave 2 (owner 2026-10-01): the verdict logic versions WITH the
+          # reviewed pack — the unpacked pack's loop/verdict.sh WINS; the
+          # legacy delegation `bash factory-agents/setup/review-verdict.sh decide`
+          # remains the fallback for old pins. The pack cache
+          # (~/.dmtools/packs/<agent>-<version>/) is guaranteed populated
+          # here: the agent run above resolved the review pack parent.
+          VERDICT_SH="factory-agents/setup/review-verdict.sh"
+          review_agent="$(basename "${{ needs.guard.outputs.config }}" .json)"
+          pack_verdict="$(ls -1 "${HOME}"/.dmtools/packs/"${review_agent}"-*/loop/verdict.sh 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -n "${pack_verdict}" ]; then
+            VERDICT_SH="${pack_verdict}"
+            echo "→ verdict logic: pack ${VERDICT_SH}"
+          else
+            echo "→ verdict logic: legacy tree ${VERDICT_SH} (no ${review_agent} pack loop/verdict.sh unpacked)"
+          fi
           # Decision (pure logic, eval-safe key=value output): decision,
           # source, override, blocking_markers, rounds_done, next_round,
           # escalate, round_labels, diagnosis.
@@ -1033,7 +1085,7 @@ jobs:
             ISSUE_COMMENTS_JSON="${issue_comments_json}" \
             MACHINE_AUTHOR="${MACHINE_AUTHOR:-}" \
             ISSUE_LABELS="${labels}" \
-            bash factory-agents/setup/review-verdict.sh decide)"
+            bash "${VERDICT_SH}" decide)"
           decision="${decision:-unknown}"
           escalate="${escalate:-false}"
           rounds_done="${rounds_done:-0}"
@@ -1063,7 +1115,7 @@ jobs:
                   -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved path line comments(first:1){nodes{body author{login}}}}}}}}' \
                   -f owner="$owner" -f name="$name" -F number="$pr" \
                   > "$threads_json"; then
-                  thread_summary="$(bash factory-agents/setup/review-verdict.sh threads "$threads_json")"
+                  thread_summary="$(bash "${VERDICT_SH}" threads "$threads_json")"
                 else
                   echo "::warning::reviewThreads fetch failed — the findings live in the PR review comments"
                 fi
