@@ -24,6 +24,60 @@ never need edits to bump a version.
 | `factory-merge-trigger.yml` | The `pr_approved` merge bot: issue-labeled → linked PR → CLEAN → squash-merge → label removed → issue comment. Parameterized linking (body `Closes #N`, branch `N-…`/`gh-N`, PR-label reverse mapping). | `merge-trigger.yml` |
 | `factory-sm-kicker.yml` | The SM watchdog: dispatches an SM tick when the cron was missed; re-dispatches validation CI on codeless PR heads that carry no required contexts. | `sm-kicker.yml` |
 
+## The SM kicker: why every machine repo needs it
+
+**The problem it solves.** `machine-sm.yml` drives the whole loop from a
+`schedule:` cron (`*/10`). GitHub **silently drops scheduled workflows** on
+repos it deems quiet — no error, no run, nothing in the UI: the cron simply
+stops firing, for hours, then may come back. A dead SM tick means nothing
+reconciles: validations never arm, merges never queue, PRs pile up
+validated-but-parked. Live evidence: on 2026-10-01 `epam/dmtools-dart`'s
+machine-sm schedule was dead 14:44→18:38 while GitHub still showed the cron
+configured; two validated PRs sat BLOCKED until a manual `workflow_dispatch`
+revived the chain. dmtools-agents had the same class of gap (only manual
+dispatches ran for hours).
+
+**How it works.** The kicker is a second, independent heartbeat that cannot
+be dropped together with the SM cron (different workflow, different
+schedule offset — `13,43 * * * *`):
+
+- on its own schedule and on every **non-main push**, it checks SM liveness
+  (when did machine-sm last run live?) and dispatches a tick if the SM is
+  stale;
+- on PR-head pushes it re-dispatches validation CI on **codeless heads**
+  whose required contexts never concluded (the "checks: none" stall class).
+
+**Wiring a repo (the stub).** Drop this as `.github/workflows/sm-kicker.yml`
+— inputs are the ONLY repo-specific parts:
+
+```yaml
+name: SM kicker
+on:
+  push:
+    branches-ignore: [main]
+  schedule:
+    - cron: '13,43 * * * *'   # offset from the SM cron so the two never race
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+  checks: read
+jobs:
+  kicker:
+    uses: IstiN/dmtools-agentic-workflows/.github/workflows/factory-sm-kicker.yml@<full-SHA>
+    with:
+      sm_workflow: machine-sm.yml      # the SM stub this repo dispatches
+      ci_workflow: quality.yml         # the validation CI to re-dispatch
+      ci_display_name: Quality         # its display name in logs
+      required_contexts: 'static,gate' # contexts that must conclude on PR heads
+```
+
+Pin rules from the freeze contract apply (full immutable SHA; the guard test
+fails short/branch pins). **Rule of thumb: any repo carrying
+`machine-sm.yml` must carry `sm-kicker.yml` in the same PR** — a machine
+loop without its watchdog is the stall we just lived through.
+
 ## The freeze contract
 
 1. **Pin by immutable SHA.** Callers reference
