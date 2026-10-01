@@ -1,7 +1,20 @@
 # AGENTS.md — rules for working in dmtools-agentic-workflows
 
-This repo is the **frozen machine-loop home** for the dmtools agent
-ecosystem. Read `README.md` first — it defines the freeze contract.
+This repo is the **shared CI/CD workflow home** of the dmtools agent
+ecosystem: today the GitHub Actions machine-loop factory (the `factory-*.yml`
+reusable workflows), tomorrow the GitLab pipeline equivalents in the same
+repo. Read `README.md` first — it defines the freeze contract and the
+consume/add guides.
+
+## Purpose (owner mandate, 2026-10-01)
+
+- **Only shared workflows live here.** GitHub workflows under
+  `.github/workflows/` now; GitLab pipelines under `gitlab/` when they
+  arrive. No scripts, no prompts, no examples, no repo-local state —
+  anything a workflow needs at run time comes from the CALLER's repo, the
+  dmtools-agents release, or the dmtools-dart CLI release.
+- Target repos carry thin stubs (triggers + one pinned `uses:` call); this
+  repo carries everything below the event boundary.
 
 ## 1. Non-negotiable rules
 
@@ -13,54 +26,30 @@ ecosystem. Read `README.md` first — it defines the freeze contract.
 2. **Versions never live in these files.** Agent code comes from
    dmtools-agents releases (`vars.AGENTS_VERSION`), the CLI from
    dmtools-dart releases (`vars.DMTOOLS_VERSION`). Hardcoding a version or a
-   release tag here violates the freeze model.
+   release tag here violates the freeze model. `latest` resolves at run
+   time via the resolver steps; concrete tags pass through untouched.
 3. **`secrets` and `vars` resolve from the CALLER.** These workflows run as
    reusable (`workflow_call`) units; `vars.*`/`secrets.*` referenced here
    come from the calling repository. Never assume this repo's settings.
 4. **No `concurrency` blocks in reusable workflows.** GitHub ignores a
-   callee's concurrency; a caller+callee group-name collision fails every
-   run at startup with zero jobs (live bisect 2026-09-22). The caller owns
-   grouping.
-5. **No new required inputs/secrets without a caller-migration plan.**
-   Adding a required `workflow_call` input breaks every existing stub at
-   validation time. New knobs must be optional with a safe default.
+   caller-side group declared here and the callee's own group deadlocks;
+   the CALLER declares concurrency in its stub.
+5. **Engine pin ≠ factory pin.** The `uses:` pin (this repo) and the
+   `factory_ref` input (dmtools-agents SHA) are two independent pins —
+   guards in caller repos assert both; never conflate them.
+6. **Triggers stay repo-side.** `on:` blocks cannot be parameterized; the
+   stub owns events (issues/cron/workflow_run on the caller's CI name) and
+   the factory owns everything after the event.
 
-## 2. GitHub quirks encoded here (do not "clean up")
+## 2. Working in this repo
 
-- `github.token` arrives EMPTY through reusable-call inputs/secrets
-  (live-verified both channels) — silent pushes use the callee's OWN
-  `github.token` reference. Callers pass it via the documented
-  `silent-token` input instead.
-- `secrets: inherit` does NOT satisfy a required named secret at call
-  validation (live bisect run 35275493724) — callers map explicitly, and
-  the mapped set must EXACTLY equal the declared set.
-- Boolean-typed reusable inputs reject expressions — boolean knobs travel
-  as STRING inputs (`dryRun: 'true'`).
-- Cron is best-effort: scheduled runs silently vanish under load. That is
-  why `factory-merge.yml` exists as the event-driven fast path.
-
-## 3. Layout
-
-- `.github/workflows/factory-sm.yml` — the SM tick (version resolve → CLI
-  install → `dmtools run sm_github@latest` from the target repo checkout).
-- `.github/workflows/factory-merge.yml` — the merge bot (same skeleton,
-  `machine_merge@latest`, 5-minute timeout).
-
-## 4. Validation before merging any change
-
-- Reusable workflows have no standalone CI here — they are exercised by the
-  callers' stubs. Before merging a non-trivial change, dispatch a **dry
-  tick** in a caller repo (`gh workflow run machine-sm.yml -f dryRun=true`
-  in dmtools-dart) and confirm the reconcile step logs the plan with no
-  actions.
-- Keep the header comment of each workflow in sync with reality — it is the
-  caller's primary documentation.
-
-## 5. Session log
-
-- **2026-09-28:** repo repurposed — old `reusable-*` workflows deleted,
-  `factory-sm.yml` / `factory-merge.yml` migrated in from
-  `IstiN/dmtools-agents@f377609` and converted to the agents-by-version
-  model (pack-based run, `vars.AGENTS_VERSION` / `vars.DMTOOLS_VERSION`,
-  `factory_ref` input removed). README + this file added. First caller:
-  `epam/dmtools-dart` (#297).
+- There is no CI here (the repo IS workflows; a PR changes contract
+   surface). Reviews are manual: read the diff against every caller input
+   you touch.
+- Merges to main = a new adoptable SHA. Callers move on their own
+   schedule — old SHAs keep working forever (git history is the ABI).
+- When adding a workflow: follow the house pattern (`workflow_call` inputs
+   with safe defaults, repo-specific names parameterized, no versions, no
+   concurrency). Document the caller stub shape in `README.md`.
+- GitLab pipelines (future): same freeze contract, `gitlab/` namespace,
+   stub/pin discipline unchanged — the contract is CI-system-agnostic.
