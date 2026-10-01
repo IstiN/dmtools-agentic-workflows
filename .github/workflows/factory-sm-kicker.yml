@@ -1,0 +1,150 @@
+# SM kicker — a tiny watchdog (two jobs, seconds each, ~zero runner cost).
+#
+# Canonical home for the SM-kicker watchdog every factory repo points at.
+# The calling repo keeps a thin stub workflow that calls this one with the
+# repo-specific names (defaults match flutter_agent_harness).
+#
+# Why it exists: a repo whose CI is dispatch-only (no `on.push` on PR
+# heads) and whose Machine SM is the sole trigger has two gaps that leave
+# a PR BLOCKED forever with zero required-check contexts on its head:
+#
+#   1. SM dead: the cron tick missed/failed and nothing re-arms it.
+#      Fix: if no SM run is queued/running/in-progress — dispatch one tick.
+#
+#   2. Head completeness: pushes WITHOUT code changes (pure main-merge
+#      commits — the SM's own silent update-branch, or a manual
+#      "merge main into branch") fire no workflows by design, yet strict
+#      `up-to-date` protection demands FRESH required checks on the new
+#      head SHA. Fix: if a PR head is a codeless merge commit (2 parents,
+#      0 files vs first parent) and carries NEITHER of the required check
+#      contexts NOR an active CI run — dispatch the CI workflow on it.
+#
+# Code-bearing pushes (dev/rework/WIP) are deliberately NOT touched here:
+# their validation schedule stays owned by the SM ("intermediate pushes
+# are free"). The schedule leg re-checks open PRs every 30 min to also
+# cover bot pushes made with GITHUB_TOKEN (those fire no events at all).
+
+name: Factory SM kicker
+
+run-name: '🥁 kicker ${{ github.event_name }} ${{ github.ref_name }}'
+
+on:
+  workflow_call:
+    inputs:
+      sm_workflow:
+        description: 'File name of the Machine SM workflow in the caller repo'
+        type: string
+        default: 'machine-sm.yml'
+      ci_workflow:
+        description: 'File name of the validation CI workflow to dispatch'
+        type: string
+        default: 'ci.yml'
+      ci_display_name:
+        description: 'Workflow display NAME as it appears in the runs API'
+        type: string
+        default: 'CI'
+      required_contexts:
+        description: 'Comma-separated required check context names'
+        type: string
+        default: 'Quality gate,JS engine integration (quickjs-ng),Binaries smoke gate'
+  workflow_dispatch:
+    inputs:
+      sm_workflow:
+        description: 'SM workflow file'
+        type: string
+        default: 'machine-sm.yml'
+      ci_workflow:
+        description: 'CI workflow file to dispatch'
+        type: string
+        default: 'ci.yml'
+      ci_display_name:
+        description: 'CI workflow display name'
+        type: string
+        default: 'CI'
+      required_contexts:
+        description: 'Comma-separated required check contexts'
+        type: string
+        default: 'Quality gate,JS engine integration (quickjs-ng),Binaries smoke gate'
+
+permissions:
+  actions: write        # workflow_dispatch: sm / ci
+  contents: read
+  pull-requests: read
+  checks: read
+
+concurrency:
+  # Global group, but NO cancel-in-progress (fa #911 diagnosis,
+  # 2026-09-25): a push on ANY PR branch used to kill the in-flight kicker
+  # for every other branch, leaving sm-liveness/head-completeness
+  # check-runs stamped CANCELLED on random heads and polluting PR check
+  # rolls repo-wide. The kicker jobs are seconds-cheap watchdogs — let
+  # them queue instead of cancelling; a bounded backlog is harmless.
+  group: factory-sm-kicker
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  SM_WORKFLOW: ${{ inputs.sm_workflow || 'machine-sm.yml' }}
+  CI_WORKFLOW: ${{ inputs.ci_workflow || 'ci.yml' }}
+  CI_DISPLAY: ${{ inputs.ci_display_name || 'CI' }}
+  REQUIRED_CONTEXTS: ${{ inputs.required_contexts || 'Quality gate,JS engine integration (quickjs-ng),Binaries smoke gate' }}
+
+jobs:
+  sm-liveness:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch an SM tick if none is queued or running
+        run: |
+          active=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$SM_WORKFLOW/runs?per_page=1" \
+            --jq '[.workflow_runs[] | select(.status == "in_progress" or .status == "queued" or .status == "waiting" or .status == "pending")] | length')
+          if [ "${active:-0}" -gt 0 ]; then
+            echo "SM alive ($active active run(s)) — nothing to do"
+          else
+            echo "SM idle — dispatching a tick"
+            gh workflow run "$SM_WORKFLOW" -R "$GITHUB_REPOSITORY"
+          fi
+
+  head-completeness:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch CI on codeless PR heads that carry no required contexts
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            if [ "$GITHUB_REF_TYPE" != "branch" ]; then echo "tag push — skip"; exit 0; fi
+            branches=("${GITHUB_REF_NAME}")
+          else
+            mapfile -t branches < <(gh pr list -R "$GITHUB_REPOSITORY" --state open --json headRefName --jq '.[].headRefName')
+            echo "scanning ${#branches[@]} open PR branch(es)"
+          fi
+          IFS=',' read -ra contexts <<< "$REQUIRED_CONTEXTS"
+          jq_ctx=$(printf '%s\n' "${contexts[@]}" | jq -R . | jq -s .)
+          for b in "${branches[@]}"; do
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$b" --jq .sha 2>/dev/null) || { echo "$b: no head, skip"; continue; }
+            read -r parents files < <(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '"\(.parents | length) \(.files | length)"')
+            if [ "$parents" != "2" ] || [ "${files:-1}" != "0" ]; then
+              echo "$b: code-bearing head — SM owns validation, skip"
+              continue
+            fi
+            ci=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&event=workflow_dispatch" \
+              --jq --arg name "$CI_DISPLAY" '[.workflow_runs[] | select(.name == $name and (.status == "in_progress" or .status == "queued" or .status == "waiting" or .status == "pending"))] | length')
+            if [ "${ci:-0}" -gt 0 ]; then
+              echo "$b: CI already active on ${sha:0:9} — skip"
+              continue
+            fi
+            found=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs?per_page=100" \
+              --jq --argjson ctx "$jq_ctx" '[.check_runs[].name | select(. as $n | $ctx | index($n))] | length')
+            if [ "${found:-0}" -gt 0 ]; then
+              echo "$b: ${sha:0:9} already has required contexts — skip"
+              continue
+            fi
+            # grace re-check: a CI dispatch may be in flight from the SM/chain
+            sleep 45
+            ci=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&event=workflow_dispatch" \
+              --jq --arg name "$CI_DISPLAY" '[.workflow_runs[] | select(.name == $name)] | length')
+            if [ "${ci:-0}" -gt 0 ]; then
+              echo "$b: CI appeared during grace window — skip"
+              continue
+            fi
+            echo "$b: codeless head ${sha:0:9} with zero required contexts — dispatching CI"
+            gh workflow run "$CI_WORKFLOW" -R "$GITHUB_REPOSITORY" --ref "$b"
+          done
