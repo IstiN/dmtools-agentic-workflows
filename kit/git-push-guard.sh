@@ -1,7 +1,7 @@
+#!/usr/bin/env bash
 # Canonical home: dmtools-agentic-workflows/kit (2026-10-01) — moved
 # verbatim from dmtools-agents scripts/ and setup/; freeze-contract pinned
 # via GITHUB_ACTION_REF (the uses-pin callers invoke this repo at).
-#!/usr/bin/env bash
 # git-push-guard — mechanical guard for agent sessions (dmtools-agents#542).
 #
 # Installed as a `git` shim at the FRONT of PATH for every agent session (see

@@ -451,7 +451,16 @@ jobs:
           git -C "$dir" fetch -q --depth 1 origin "$ref" \
             || { echo "::warning::kit fetch failed — falling back to factory-agents copies"; exit 0; }
           git -C "$dir" checkout -q FETCH_HEAD -- kit/
-          [ -f "$dir/kit/git-push-guard.sh" ] || { echo "::warning::kit incomplete at $ref — falling back"; rm -rf "$dir"; }
+          [ -f "$dir/kit/git-push-guard.sh" ] || { echo "::warning::kit incomplete at $ref — falling back"; rm -rf "$dir"; exit 0; }
+          # Kit liveness probe (awf#7): a guard whose shebang is not line 1
+          # silently executes under /bin/sh and dies with "Syntax error" on
+          # every git call — the whole dev session loses git (branch setup,
+          # timer auto-commit, PR post-action) with quiet skips downstream.
+          head -1 "$dir/kit/git-push-guard.sh" | grep -q '^#!.*bash' \
+            || { echo "::error::kit git-push-guard.sh lost its shebang (line 1) at $ref — refusing to arm a broken guard"; exit 1; }
+          cp "$dir/kit/git-push-guard.sh" "$RUNNER_TEMP/git-probe" && chmod +x "$RUNNER_TEMP/git-probe"
+          "$RUNNER_TEMP/git-probe" version >/dev/null 2>&1 \
+            || { echo "::error::kit git-push-guard.sh does not execute (probe failed) at $ref"; exit 1; }
 
       - name: "Resolve parent config (pack launch.json wins, tree fallback)"
         # Wave 2 (owner 2026-10-01): teammate packs are self-sufficient —

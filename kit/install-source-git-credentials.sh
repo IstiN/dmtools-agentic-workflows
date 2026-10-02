@@ -1,7 +1,7 @@
+#!/usr/bin/env bash
 # Canonical home: dmtools-agentic-workflows/kit (2026-10-01) — moved
 # verbatim from dmtools-agents scripts/ and setup/; freeze-contract pinned
 # via GITHUB_ACTION_REF (the uses-pin callers invoke this repo at).
-#!/usr/bin/env bash
 # install-source-git-credentials.sh — make SOURCE_GITHUB_TOKEN the credential
 # that wins for github.com pushes, instead of the checkout's GitHub App token
 # (github-actions[bot]). gh-63: bot-actor pushes put every machine PR behind
