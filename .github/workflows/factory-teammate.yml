@@ -78,9 +78,9 @@ on:
         required: true
         type: string
       flutter-version:
-        description: 'Flutter SDK for agent work (cached). "" skips — for pure-Dart targets that only need dart from the runner image. A value installs Flutter+matching Dart via flutter-action with SDK caching (e.g. "stable", "3.38.0").'
+        description: 'Flutter SDK for agent work (cached). "" (default) installs NOTHING — most consumers are not Flutter projects and bring their own toolchain via the setup/install scripts. A value installs Flutter+matching Dart via flutter-action with SDK caching (e.g. "stable", "3.38.0"); Flutter targets (fa) pass it explicitly.'
         required: false
-        default: 'stable'
+        default: ''
         type: string
 
     secrets:
