@@ -441,11 +441,17 @@ jobs:
         # — a PR head can no longer supply them (self-host security,
         # 2026-10-01) and the script version can never skew from the workflow
         # version that calls it. Plain git (no action): GitLab-portable.
+        #
+        # RUNNER_TEMP, never $GITHUB_WORKSPACE: a nested git repo inside the
+        # workspace poisons every downstream `git add` (the gitlink "does
+        # not have a commit checked out", exit 128 — live fa gh-1000
+        # 2026-10-03: PR staging, origin-sync clean-tree gate, and the
+        # session timer auto-commit all tripped on it).
         env:
           AWF_REF: ${{ github.workflow_ref }}
         run: |
           ref="${AWF_REF##*@}"
-          dir="${GITHUB_WORKSPACE}/factory-kit"
+          dir="${RUNNER_TEMP}/factory-kit"
           git init -q "$dir"
           git -C "$dir" remote add origin https://github.com/IstiN/dmtools-agentic-workflows.git
           git -C "$dir" fetch -q --depth 1 origin "$ref" \
@@ -638,7 +644,7 @@ jobs:
         # shared installer — one copy serves every push path in the job).
         env:
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
-        run: bash factory-kit/kit/install-source-git-credentials.sh 2>/dev/null \
+        run: bash "${RUNNER_TEMP}/factory-kit/kit/install-source-git-credentials.sh" 2>/dev/null \
             || bash factory-agents/setup/install-source-git-credentials.sh
 
       - name: Trace git credential stack (push-time evidence)
@@ -845,7 +851,7 @@ jobs:
           # steps (session-branch persistence) push legitimately.
           GIT_GUARD_BIN="${RUNNER_TEMP:-/tmp}/git-push-guard-bin"
           mkdir -p "${GIT_GUARD_BIN}"
-          GUARD="${GITHUB_WORKSPACE}/factory-kit/kit/git-push-guard.sh"
+          GUARD="${RUNNER_TEMP}/factory-kit/kit/git-push-guard.sh"
           [ -f "$GUARD" ] || GUARD="${GITHUB_WORKSPACE}/factory-agents/scripts/git-push-guard.sh"
           ln -sf "$GUARD" "${GIT_GUARD_BIN}/git"
           export PATH="${GIT_GUARD_BIN}:${PATH}"
@@ -1258,7 +1264,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
         run: |
-          bash factory-kit/kit/install-source-git-credentials.sh 2>/dev/null \
+          bash "${RUNNER_TEMP}/factory-kit/kit/install-source-git-credentials.sh" 2>/dev/null \
             || bash factory-agents/setup/install-source-git-credentials.sh
           echo "── post-agent extraheader trace (must be empty) ──"
           git config --show-origin --get-all http.https://github.com/.extraheader | sed -E 's/^([^\t]*\t).*/\1<redacted>/; t; s/.+/<redacted> (unexpected line without origin)/' || true
