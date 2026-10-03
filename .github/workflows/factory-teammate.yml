@@ -453,12 +453,27 @@ jobs:
             echo "FACTORY_ROOT=${GITHUB_WORKSPACE}/factory-agents" >> "$GITHUB_ENV"
             exit 0
           fi
+          # DMTOOLS_PACK_REGISTRY is the dm.ai #579 RESOLVER format — a
+          # releases BASE URL (…/releases/latest/download) or a tag URL;
+          # only a bare tag can feed `gh release download` directly.
           tag="${PACK_TAG}"
+          case "${tag}" in
+            http*)
+              # …/releases/tag/<tag> pins exactly; anything else (/latest/,
+              # /download/) resolves to the newest agents-rel-* tag.
+              pinned="$(printf '%s' "${tag}" | sed -n 's#.*/releases/tag/\([A-Za-z0-9._-]\+\).*#\1#p')"
+              if [ -n "${pinned}" ] && printf '%s' "${pinned}" | grep -q '^agents-rel-'; then
+                tag="${pinned}"
+              else
+                tag=""
+              fi
+              ;;
+          esac
           if [ -z "${tag}" ]; then
             tag="$(gh release list --repo IstiN/dmtools-agents --limit 10 --json tagName \
               --jq '[.[].tagName | select(startswith("agents-rel-"))] | .[0]')"
             [ -n "${tag}" ] || { echo "::error::no agents-rel-* release found in IstiN/dmtools-agents"; exit 1; }
-            echo "::notice::DMTOOLS_PACK_REGISTRY unset — factory-setup from newest release ${tag}"
+            echo "::notice::factory-setup from newest release ${tag}"
           fi
           dir="${RUNNER_TEMP}/factory-setup"
           mkdir -p "${dir}"
