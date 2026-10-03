@@ -121,7 +121,10 @@ jobs:
           # caller-repo checkout: the factory reads .dmtools/config.js from
           # the TARGET repository, never from the factory pack
           ref: ${{ github.ref }}
-          fetch-depth: 0
+          # gate job only: config.js at the head + API guards — no git
+          # history walks. fetch-depth 0 cloned the FULL history here
+          # (~1 min on fa, every leg) for nothing.
+          fetch-depth: 1
       - name: Decide whether this event is for the agent
         id: check
         env:
