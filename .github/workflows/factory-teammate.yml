@@ -412,11 +412,12 @@ jobs:
       - name: Checkout target repository
         uses: actions/checkout@v7
         with:
-          # The engine rides factory-agents/ (checked out next), but the
-          # parent runner configs reference the target's submodule paths
-          # verbatim (agents/js/*.js, ./agents/scripts/*) so the machine
-          # runs identically locally and in the factory — the submodule
-          # MUST be initialized at the reviewed, pinned SHA.
+          # The engine and glue ride the factory-setup zip (releases) and
+          # the agent packs (registry) — but parent runner configs may
+          # reference the target's submodule paths verbatim
+          # (agents/js/*.js, ./agents/scripts/*) so the machine runs
+          # identically locally and in the factory — the submodule MUST be
+          # initialized at the reviewed, pinned SHA.
           submodules: true
           persist-credentials: false
 
@@ -429,13 +430,46 @@ jobs:
           # factory can never skew apart. Keep both in sync when flipping refs.
           echo "FACTORY_REF=${{ inputs.factory_ref }}" >> "$GITHUB_ENV"
 
-      - name: "Checkout factory (dmtools-agents: runners + scripts)"
-        uses: actions/checkout@v7
-        with:
-          repository: IstiN/dmtools-agents
-          ref: ${{ env.FACTORY_REF }}
-          path: factory-agents
-          persist-credentials: false
+      - name: "Fetch factory-setup (dmtools-agents releases — no tree checkout)"
+        # Owner mandate 2026-10-03: the factory NEVER clones the
+        # dmtools-agents tree. The workflow glue the run needs —
+        # setup/ toolbelt (install.sh, cache.sh, review-verdict.sh,
+        # fa-session.sh, ...), scripts/git-push-guard.sh fallback and the
+        # four legacy leg configs — ships as the factory-setup-*.zip
+        # release asset (built by ci/release_packs.mjs, rides every
+        # agents-rel-* tag).
+        # Compat: a pre-mounted factory-agents/ tree still WINS over the
+        # zip — hosts that intentionally mount the tree (dmtools-agents'
+        # own factory-probe, forks pinning local trees) keep their copies.
+        # FACTORY_ROOT carries the winner for every later step.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACK_TAG: ${{ vars.DMTOOLS_PACK_REGISTRY }}
+        run: |
+          set -eu
+          # Compat branch: mounted tree wins, untouched.
+          if [ -d "${GITHUB_WORKSPACE}/factory-agents" ]; then
+            echo "→ compat: factory-agents/ tree is mounted — it wins (FACTORY_ROOT=tree)"
+            echo "FACTORY_ROOT=${GITHUB_WORKSPACE}/factory-agents" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          tag="${PACK_TAG}"
+          if [ -z "${tag}" ]; then
+            tag="$(gh release list --repo IstiN/dmtools-agents --limit 10 --json tagName \
+              --jq '[.[].tagName | select(startswith("agents-rel-"))] | .[0]')"
+            [ -n "${tag}" ] || { echo "::error::no agents-rel-* release found in IstiN/dmtools-agents"; exit 1; }
+            echo "::notice::DMTOOLS_PACK_REGISTRY unset — factory-setup from newest release ${tag}"
+          fi
+          dir="${RUNNER_TEMP}/factory-setup"
+          mkdir -p "${dir}"
+          tmp="$(mktemp -d)"
+          gh release download "${tag}" --repo IstiN/dmtools-agents \
+            --pattern 'factory-setup-*.zip' --dir "${tmp}" --clobber
+          unzip -q "${tmp}"/factory-setup-*.zip -d "${dir}"
+          [ -f "${dir}/setup/cache.sh" ] || { echo "::error::factory-setup incomplete at ${tag} (no setup/cache.sh)"; exit 1; }
+          [ -f "${dir}/configs/pr_review.json" ] || { echo "::error::factory-setup incomplete at ${tag} (no configs/)"; exit 1; }
+          echo "→ factory-setup from ${tag} (FACTORY_ROOT=${dir})"
+          echo "FACTORY_ROOT=${dir}" >> "$GITHUB_ENV"
 
       - name: "Fetch factory kit (this repo @ invocation ref — immutable)"
         # Trust-boundary scripts (git push guard, source PAT credentials)
@@ -458,7 +492,7 @@ jobs:
           git init -q "$dir"
           git -C "$dir" remote add origin https://github.com/IstiN/dmtools-agentic-workflows.git
           git -C "$dir" fetch -q --depth 1 origin "$ref" \
-            || { echo "::warning::kit fetch failed — falling back to factory-agents copies"; exit 0; }
+            || { echo "::warning::kit fetch failed — falling back to FACTORY_ROOT copies"; exit 0; }
           git -C "$dir" checkout -q FETCH_HEAD -- kit/
           [ -f "$dir/kit/git-push-guard.sh" ] || { echo "::warning::kit incomplete at $ref — falling back"; rm -rf "$dir"; exit 0; }
           # Kit liveness probe (awf#7): a guard whose shebang is not line 1
@@ -493,13 +527,22 @@ jobs:
           if [ -n "${pack_launch}" ]; then
             echo "→ pack launch.json wins: ${pack_launch}"
             echo "AI_TEAMMATE_CONFIG_FILE=${pack_launch}" >> "$GITHUB_ENV"
-          elif [ -f "${LEGACY_CONFIG}" ]; then
-            echo "→ no unpacked ${agent} pack launch.json — legacy tree config: ${LEGACY_CONFIG}"
-            echo "AI_TEAMMATE_CONFIG_FILE=${LEGACY_CONFIG}" >> "$GITHUB_ENV"
-          else
-            echo "::error::no parent config for '${agent}': neither ~/.dmtools/packs/${agent}-*/launch.json nor legacy ${LEGACY_CONFIG} exists — the pin has neither Wave-2 packs nor the tree configs"
-            exit 1
+            exit 0
           fi
+          # No unpacked pack — the legacy fallback now lives under
+          # FACTORY_ROOT: a mounted tree keeps its root-level <agent>.json
+          # layout; the factory-setup zip ships configs/<agent>.json.
+          for legacy_path in \
+            "${FACTORY_ROOT}/${agent}.json" \
+            "${FACTORY_ROOT}/configs/${agent}.json"; do
+            if [ -f "${legacy_path}" ]; then
+              echo "→ no unpacked ${agent} pack launch.json — legacy config: ${legacy_path}"
+              echo "AI_TEAMMATE_CONFIG_FILE=${legacy_path}" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "::error::no parent config for '${agent}': neither ~/.dmtools/packs/${agent}-*/launch.json nor ${FACTORY_ROOT}/${agent}.json nor ${FACTORY_ROOT}/configs/${agent}.json exists — no Wave-2 pack unpacked and the factory-setup legacy configs are missing"
+          exit 1
 
       - name: Export fa session identity + cache keys
         # AI_TEAMMATE_CONFIG_FILE comes from the resolve step above
@@ -507,7 +550,7 @@ jobs:
         env:
           AI_TEAMMATE_DISPLAY_KEY: GH-${{ needs.guard.outputs.anchor }}
           AI_TEAMMATE_CONCURRENCY_KEY: ${{ needs.guard.outputs.anchor }}
-        run: bash factory-agents/setup/cache.sh keys fa-session
+        run: bash "${FACTORY_ROOT}/setup/cache.sh" keys fa-session
 
       - name: Restore fa session (resume the ticket conversation)
         # actions/cache saves are denied on issues-event runs (job token is
@@ -602,7 +645,7 @@ jobs:
               && cp "${tmp}/bundle/version.txt" "${HOME}/.local/bin/version.txt"
             cp -R "${tmp}/bundle/lib/." "${HOME}/.local/lib/" 2>/dev/null || true
           fi
-          bash factory-agents/setup/install.sh "fa:${FA_VERSION}"
+          bash "${FACTORY_ROOT}/setup/install.sh" "fa:${FA_VERSION}"
 
       - name: Install dmtools CLI (pinned release bundle)
         # The installer ships as a release asset, version-locked to the
@@ -648,7 +691,7 @@ jobs:
         env:
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
         run: bash "${RUNNER_TEMP}/factory-kit/kit/install-source-git-credentials.sh" 2>/dev/null \
-            || bash factory-agents/setup/install-source-git-credentials.sh
+            || bash "${FACTORY_ROOT}/setup/install-source-git-credentials.sh"
 
       - name: Trace git credential stack (push-time evidence)
         # gh-63 Task 1 — same run that pushes, right before the agent.
@@ -855,7 +898,7 @@ jobs:
           GIT_GUARD_BIN="${RUNNER_TEMP:-/tmp}/git-push-guard-bin"
           mkdir -p "${GIT_GUARD_BIN}"
           GUARD="${RUNNER_TEMP}/factory-kit/kit/git-push-guard.sh"
-          [ -f "$GUARD" ] || GUARD="${GITHUB_WORKSPACE}/factory-agents/scripts/git-push-guard.sh"
+          [ -f "$GUARD" ] || GUARD="${FACTORY_ROOT}/scripts/git-push-guard.sh"
           ln -sf "$GUARD" "${GIT_GUARD_BIN}/git"
           export PATH="${GIT_GUARD_BIN}:${PATH}"
           git --version  # resolves through the shim — proves the wiring
@@ -1083,7 +1126,7 @@ jobs:
           # remains the fallback for old pins. The pack cache
           # (~/.dmtools/packs/<agent>-<version>/) is guaranteed populated
           # here: the agent run above resolved the review pack parent.
-          VERDICT_SH="factory-agents/setup/review-verdict.sh"
+          VERDICT_SH="${FACTORY_ROOT}/setup/review-verdict.sh"
           review_agent="$(basename "${{ needs.guard.outputs.config }}" .json)"
           pack_verdict="$(ls -1 "${HOME}"/.dmtools/packs/"${review_agent}"-*/loop/verdict.sh 2>/dev/null | sort -V | tail -1 || true)"
           if [ -n "${pack_verdict}" ]; then
@@ -1268,7 +1311,7 @@ jobs:
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
         run: |
           bash "${RUNNER_TEMP}/factory-kit/kit/install-source-git-credentials.sh" 2>/dev/null \
-            || bash factory-agents/setup/install-source-git-credentials.sh
+            || bash "${FACTORY_ROOT}/setup/install-source-git-credentials.sh"
           echo "── post-agent extraheader trace (must be empty) ──"
           git config --show-origin --get-all http.https://github.com/.extraheader | sed -E 's/^([^\t]*\t).*/\1<redacted>/; t; s/.+/<redacted> (unexpected line without origin)/' || true
           if git config --get-all http.https://github.com/.extraheader | grep -q .; then
