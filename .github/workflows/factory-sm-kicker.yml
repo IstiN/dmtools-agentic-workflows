@@ -101,7 +101,13 @@ jobs:
             echo "SM alive ($active active run(s)) — nothing to do"
           else
             echo "SM idle — dispatching a tick"
-            gh workflow run "$SM_WORKFLOW" -R "$GITHUB_REPOSITORY"
+            # Real tick, always: the workflow_dispatch default is dryRun=true
+            # (a safety default for HUMAN dispatches). A bare dispatch from the
+            # kicker lands dry and cannot merge anything — live evidence
+            # 2026-10-03: dart kicker fired within 7s of #340's checks but the
+            # SM ran "(dry)" (runs 37152253853, 37157212391); every merge that
+            # night rode manual -F dryRun=false ticks instead.
+            gh workflow run "$SM_WORKFLOW" -R "$GITHUB_REPOSITORY" -F dryRun=false
           fi
 
   head-completeness:
