@@ -78,9 +78,9 @@ on:
         required: true
         type: string
       flutter-version:
-        description: 'Flutter SDK for agent work (cached). "" skips — for pure-Dart targets that only need dart from the runner image. A value installs Flutter+matching Dart via flutter-action with SDK caching (e.g. "stable", "3.38.0").'
+        description: 'Flutter SDK for agent work (cached). "" (default) installs NOTHING — most consumers are not Flutter projects and bring their own toolchain via the setup/install scripts. A value installs Flutter+matching Dart via flutter-action with SDK caching (e.g. "stable", "3.38.0"); Flutter targets (fa) pass it explicitly.'
         required: false
-        default: 'stable'
+        default: ''
         type: string
 
     secrets:
@@ -406,7 +406,7 @@ jobs:
     env:
       AGENT_HANDLE: ai-teammate
       FA_VERSION: ${{ vars.FA_VERSION_MACHINE || vars.FA_VERSION || 'latest' }}
-      DMTOOLS_VERSION: ${{ vars.DMTOOLS_VERSION || 'v0.1.14' }}
+      DMTOOLS_VERSION: ${{ vars.DMTOOLS_VERSION || 'latest' }}
       MAX_AUTO_REWORK_ROUNDS: ${{ vars.MAX_AUTO_REWORK_ROUNDS || 2 }}
     steps:
       - name: Checkout target repository
