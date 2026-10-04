@@ -153,13 +153,13 @@ jobs:
               continue
             fi
             ci=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&event=workflow_dispatch" \
-              --jq --arg name "$CI_DISPLAY" '[.workflow_runs[] | select(.name == $name and (.status == "in_progress" or .status == "queued" or .status == "waiting" or .status == "pending"))] | length')
+              --arg name "$CI_DISPLAY" --jq '[.workflow_runs[] | select(.name == $name and (.status == "in_progress" or .status == "queued" or .status == "waiting" or .status == "pending"))] | length')
             if [ "${ci:-0}" -gt 0 ]; then
               echo "$b: CI already active on ${sha:0:9} — skip"
               continue
             fi
             found=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs?per_page=100" \
-              --jq --argjson ctx "$jq_ctx" '[.check_runs[].name | select(. as $n | $ctx | index($n))] | length')
+              --argjson ctx "$jq_ctx" --jq '[.check_runs[].name | select(. as $n | $ctx | index($n))] | length')
             if [ "${found:-0}" -gt 0 ]; then
               echo "$b: ${sha:0:9} already has required contexts — skip"
               continue
@@ -167,7 +167,7 @@ jobs:
             # grace re-check: a CI dispatch may be in flight from the SM/chain
             sleep 45
             ci=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&event=workflow_dispatch" \
-              --jq --arg name "$CI_DISPLAY" '[.workflow_runs[] | select(.name == $name)] | length')
+              --arg name "$CI_DISPLAY" --jq '[.workflow_runs[] | select(.name == $name)] | length')
             if [ "${ci:-0}" -gt 0 ]; then
               echo "$b: CI appeared during grace window — skip"
               continue
