@@ -73,13 +73,34 @@ permissions:
   checks: read
 
 concurrency:
-  # Global group, but NO cancel-in-progress (fa #911 diagnosis,
-  # 2026-09-25): a push on ANY PR branch used to kill the in-flight kicker
-  # for every other branch, leaving sm-liveness/head-completeness
-  # check-runs stamped CANCELLED on random heads and polluting PR check
-  # rolls repo-wide. The kicker jobs are seconds-cheap watchdogs — let
-  # them queue instead of cancelling; a bounded backlog is harmless.
-  group: factory-sm-kicker
+  # Per-head-SHA group (dmtools-agents#682, live fa#1202/#1203 on
+  # 2026-10-03 23:05–23:57; still reproducing 2026-10-04 06:21–06:22 —
+  # eight branches' kicker runs cancelled inside one 36-second dev-wave,
+  # fa run ids 37182568709…37182598010). The fa #911 fix below stopped
+  # the IN-FLIGHT kills, but the global group kept killing the PENDING
+  # ones: a queued run in a shared concurrency group ALWAYS supersedes
+  # the pending one ("Any existing pending job or workflow in the same
+  # concurrency group, if it exists, will be canceled and the new queued
+  # job or workflow will take its place" — GitHub docs);
+  # cancel-in-progress: false only shields the RUNNING run. So every
+  # silent-refresh push / factory-data snapshot / dev-wave push cancelled
+  # every other branch's pending kicker, the required contexts
+  # (sm-liveness/head-completeness where a repo requires them) ended
+  # CANCELLED on fresh PR heads, and the PRs sat BLOCKED until manual
+  # reruns (2 dead zones + 2 manual reruns on 2026-10-03 alone).
+  # Scoping the group to the pushed head SHA means no push can displace
+  # another push's kicker: a queued kicker that is about to dispatch a
+  # tick ALWAYS gets to run. The kicker jobs stay seconds-cheap and
+  # idempotent (liveness re-probes before dispatching, head-completeness
+  # re-checks with a 45s grace), so wave-time parallel kickers are
+  # harmless — same cost posture as the fa #911 "let them queue" call.
+  # cancel-in-progress stays false: even a same-SHA collision (schedule
+  # + manual dispatch on one commit) must never kill an in-flight kicker.
+  # CONSUMERS: re-pin your stub to this commit. If your stub defines its
+  # OWN caller-level concurrency group, scope it per-head too (or drop
+  # it — this group now carries the scoping): a caller-level global
+  # group re-introduces the pending-run supersession on its own.
+  group: factory-sm-kicker-${{ github.sha }}
   cancel-in-progress: false
 
 env:
