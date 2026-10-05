@@ -15,10 +15,14 @@
 #
 # Linking conventions (any of):
 #   - PR body contains `Closes #NN` / `Fixes #NN` / `Resolves #NN`
+#   - PR body contains `Part of #NN` (link WITHOUT close — GitHub never
+#     auto-closes on "Part of", the epic survives the slice merge)
 #   - PR branch name starts with `NN-` (e.g. `42-fix-foo`)
 #   - PR branch name matches `gh-0*NN` (the gh-N display-title convention)
 #   - the PR itself carries the label (pr_review approves via
-#     scm.addLabel) — mapped back to its linked issue
+#     scm.addLabel) — mapped back to its linked issue; a labeled PR with
+#     NO resolvable issue merges directly (PR-carrier path: fix/*,
+#     chore/*, machine PRs)
 #
 # Prerequisites (in the calling repo):
 #   vars: MERGE_TRIGGER_ENABLED (fuse — the job skips itself until `true`)
@@ -101,29 +105,32 @@ jobs:
           # PR) — map PR labels back to their linked issues.
           issues=$(gh issue list --repo "$repo" --label "$LABEL" --state open \
             --json number --jq '.[].number')
+          orphan_prs=""
           if [ "$MAP_PR_LABELS" = "true" ]; then
             prs_labeled=$(gh pr list --repo "$repo" --label "$LABEL" --state open \
               --json number,body,headRefName --jq '.[] | "\(.number)\t\(.body // "")\t\(.headRefName)"')
             while IFS=$'\t' read -r prn body branch; do
               [ -n "$prn" ] || continue
-              n=$(echo "$body" | grep -oiE '\b(closes|fixes|resolves)\s+#[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+              n=$(echo "$body" | grep -oiE '\b(closes|fixes|resolves|part of)\s+#[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
               [ -n "$n" ] || n=$(echo "$branch" | grep -oE '^[0-9]+' || true)
               [ -n "$n" ] || n=$(echo "$branch" | grep -oE 'gh-[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
               if [ -n "$n" ]; then
                 open=$(gh issue view "$n" --repo "$repo" --json state --jq .state 2>/dev/null || true)
-                [ "$open" = "OPEN" ] && issues="$issues $n"
+                if [ "$open" = "OPEN" ]; then issues="$issues $n"; else orphan_prs="$orphan_prs $prn"; fi
+              else
+                orphan_prs="$orphan_prs $prn"
               fi
             done < <(printf '%s\n' "$prs_labeled")
             issues=$(echo $issues | tr ' ' '\n' | sort -u | tr '\n' ' ')
           fi
-          if [ -z "${issues// /}" ]; then
+          if [ -z "${issues// /}" ] && [ -z "${orphan_prs// /}" ]; then
             echo "no issues labeled '$LABEL' — nothing to merge"
             exit 0
           fi
           merged=0; skipped=0
           for n in $issues; do
             echo "::group::issue #$n"
-            gh_pat='(?i)\\b(closes|fixes|resolves)\\s+#'"$n"'\\b'
+            gh_pat='(?i)\\b(closes|fixes|resolves|part of)\\s+#'"$n"'\\b'
             branch_pat='^'"$n"'[-_.]'
             if [ "$GH_BRANCH_PATTERN" = "true" ]; then
               link_sel="((.body // \"\") | test(\"$gh_pat\")) or (.headRefName | test(\"$branch_pat\")) or (.headRefName | test(\"(^|[-_./])gh-0*$n$\"))"
@@ -165,6 +172,42 @@ jobs:
                 ;;
               *)
                 skipped=$((skipped+1)); echo "⛔ not mergeable ($state) — needs manual attention"
+                ;;
+            esac
+            echo "::endgroup::"
+          done
+          # PR-carrier path: labeled PRs with no OPEN linked issue (issue-less
+          # machine PRs, or the issue already closed) merge directly — there
+          # is no issue to un-label or comment on.
+          for prn in $orphan_prs; do
+            [ -n "$prn" ] || continue
+            echo "::group::PR #$prn (no linked open issue)"
+            state=$(gh pr view "$prn" --repo "$repo" \
+              --json mergeable,mergeStateStatus \
+              --jq '.mergeable + ":" + .mergeStateStatus')
+            case "$state" in
+              MERGEABLE:CLEAN)
+                if err=$(gh pr merge "$prn" --repo "$repo" --squash 2>&1); then
+                  merged=$((merged+1))
+                  if [ "$REMOVE_PR_LABEL" = "true" ]; then
+                    gh pr edit "$prn" --repo "$repo" --remove-label "$LABEL" || true
+                  fi
+                  gh pr comment "$prn" --repo "$repo" \
+                    --body "🔀 Merged (CI: ${CI_RUN_URL:-run})" || true
+                  echo "✅ merged PR #$prn (issue-less)"
+                else
+                  skipped=$((skipped+1))
+                  echo "❌ merge of #$prn failed: $err"
+                fi
+                ;;
+              MERGEABLE:BEHIND)
+                skipped=$((skipped+1)); echo "⏳ PR #$prn behind main — the SM (silent-update-behind) refreshes it, then re-dispatches CI"
+                ;;
+              MERGEABLE:BLOCKED|MERGEABLE:UNSTABLE)
+                skipped=$((skipped+1)); echo "⏳ PR #$prn required checks not green yet"
+                ;;
+              *)
+                skipped=$((skipped+1)); echo "⛔ PR #$prn not mergeable ($state) — needs manual attention"
                 ;;
             esac
             echo "::endgroup::"
