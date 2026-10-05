@@ -24,6 +24,13 @@
 #     NO resolvable issue merges directly (PR-carrier path: fix/*,
 #     chore/*, machine PRs)
 #
+# The sweep logic lives in the dmtools-agents pack (merge_trigger.json →
+# agents/js/mergeTrigger.js, agents#754): structured github_* bridge
+# calls, no bash text parsing. This workflow is only the dmtools-run
+# WRAPPER — version knobs resolve from the CALLER's repository variables
+# (vars.AGENTS_VERSION / vars.DMTOOLS_VERSION, 'latest' default), same
+# freeze contract as factory-merge.yml / factory-sm.yml.
+#
 # Prerequisites (in the calling repo):
 #   vars: MERGE_TRIGGER_ENABLED (fuse — the job skips itself until `true`)
 #   branch protection on main with required checks + strict (the machine
@@ -61,6 +68,12 @@ permissions:
   issues: write
   actions: read
 
+env:
+  # Version knobs resolve from the CALLER's repository variables (vars.*
+  # resolve in the caller's context for reusable workflows).
+  AGENTS_VERSION: ${{ vars.AGENTS_VERSION || 'latest' }}
+  DMTOOLS_VERSION: ${{ vars.DMTOOLS_VERSION || 'latest' }}
+
 jobs:
   merge-trigger:
     runs-on: ${{ inputs.runner }}
@@ -88,128 +101,49 @@ jobs:
             echo "::notice::merge-trigger scaffold is wired but disabled — set the MERGE_TRIGGER_ENABLED repo variable to true (after branch protection + required checks are in place)."
           fi
 
-      - name: Merge issues labeled pr_approved
+      - name: Resolve versions (agents release + dmtools CLI)
         if: steps.gate.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
-          LABEL: pr_approved
-          CI_RUN_URL: ${{ github.event.workflow_run.html_url }}
-          REMOVE_PR_LABEL: ${{ inputs.remove_pr_label }}
-          MAP_PR_LABELS: ${{ inputs.map_pr_labels }}
-          GH_BRANCH_PATTERN: ${{ inputs.gh_branch_pattern }}
         run: |
-          set -euo pipefail
-          repo="${{ github.repository }}"
-          # Candidates come from BOTH sides: the issue label (human/bot)
-          # and the PR label (pr_review approves via scm.addLabel on the
-          # PR) — map PR labels back to their linked issues.
-          issues=$(gh issue list --repo "$repo" --label "$LABEL" --state open \
-            --json number --jq '.[].number')
-          orphan_prs=""
-          if [ "$MAP_PR_LABELS" = "true" ]; then
-            prs_labeled=$(gh pr list --repo "$repo" --label "$LABEL" --state open \
-              --json number,body,headRefName --jq '.[] | "\(.number)\t\(.body // "")\t\(.headRefName)"')
-            while IFS=$'\t' read -r prn body branch; do
-              [ -n "$prn" ] || continue
-              n=$(echo "$body" | grep -oiE '\b(closes|fixes|resolves|part of)\s+#[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
-              [ -n "$n" ] || n=$(echo "$branch" | grep -oE '^[0-9]+' || true)
-              [ -n "$n" ] || n=$(echo "$branch" | grep -oE 'gh-[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
-              if [ -n "$n" ]; then
-                open=$(gh issue view "$n" --repo "$repo" --json state --jq .state 2>/dev/null || true)
-                if [ "$open" = "OPEN" ]; then issues="$issues $n"; else orphan_prs="$orphan_prs $prn"; fi
-              else
-                orphan_prs="$orphan_prs $prn"
-              fi
-            done < <(printf '%s\n' "$prs_labeled")
-            issues=$(echo $issues | tr ' ' '\n' | sort -u | tr '\n' ' ')
-          fi
-          if [ -z "${issues// /}" ] && [ -z "${orphan_prs// /}" ]; then
-            echo "no issues labeled '$LABEL' — nothing to merge"
-            exit 0
-          fi
-          merged=0; skipped=0
-          for n in $issues; do
-            echo "::group::issue #$n"
-            gh_pat='(?i)\\b(closes|fixes|resolves|part of)\\s+#'"$n"'\\b'
-            branch_pat='^'"$n"'[-_.]'
-            if [ "$GH_BRANCH_PATTERN" = "true" ]; then
-              link_sel="((.body // \"\") | test(\"$gh_pat\")) or (.headRefName | test(\"$branch_pat\")) or (.headRefName | test(\"(^|[-_./])gh-0*$n$\"))"
+          resolve_tag() {
+            local repo="$1" knob="$2"
+            if [ "$knob" = "latest" ]; then
+              gh api "repos/${repo}/releases/latest" --jq .tag_name
             else
-              link_sel="((.body // \"\") | test(\"$gh_pat\")) or (.headRefName | test(\"$branch_pat\"))"
+              gh api "repos/${repo}/releases/tags/${knob}" --jq .tag_name
             fi
-            pr=$(gh pr list --repo "$repo" --state open \
-              --json number,body,headRefName \
-              --jq "[.[] | select($link_sel) | .number] | first // empty")
-            if [ -z "$pr" ]; then
-              echo "issue #$n: no linked open PR (add 'Closes #$n' to the PR body or name the branch '$n-…') — skipping"
-              skipped=$((skipped+1)); echo "::endgroup::"; continue
-            fi
-            state=$(gh pr view "$pr" --repo "$repo" \
-              --json mergeable,mergeStateStatus \
-              --jq '.mergeable + ":" + .mergeStateStatus')
-            echo "linked PR #$pr — $state"
-            case "$state" in
-              MERGEABLE:CLEAN)
-                if err=$(gh pr merge "$pr" --repo "$repo" --squash 2>&1); then
-                  merged=$((merged+1))
-                  gh issue edit "$n" --repo "$repo" --remove-label "$LABEL" || true
-                  if [ "$REMOVE_PR_LABEL" = "true" ]; then
-                    gh pr edit "$pr" --repo "$repo" --remove-label "$LABEL" || true
-                  fi
-                  gh issue comment "$n" --repo "$repo" \
-                    --body "🔀 Merged #$pr (CI: ${CI_RUN_URL:-run})" || true
-                  echo "✅ merged #$pr for issue #$n"
-                else
-                  skipped=$((skipped+1))
-                  echo "❌ merge of #$pr failed: $err"
-                fi
-                ;;
-              MERGEABLE:BEHIND)
-                skipped=$((skipped+1)); echo "⏳ behind main — the SM (silent-update-behind) refreshes it, then re-dispatches CI"
-                ;;
-              MERGEABLE:BLOCKED|MERGEABLE:UNSTABLE)
-                skipped=$((skipped+1)); echo "⏳ required checks not green yet"
-                ;;
-              *)
-                skipped=$((skipped+1)); echo "⛔ not mergeable ($state) — needs manual attention"
-                ;;
-            esac
-            echo "::endgroup::"
-          done
-          # PR-carrier path: labeled PRs with no OPEN linked issue (issue-less
-          # machine PRs, or the issue already closed) merge directly — there
-          # is no issue to un-label or comment on.
-          for prn in $orphan_prs; do
-            [ -n "$prn" ] || continue
-            echo "::group::PR #$prn (no linked open issue)"
-            state=$(gh pr view "$prn" --repo "$repo" \
-              --json mergeable,mergeStateStatus \
-              --jq '.mergeable + ":" + .mergeStateStatus')
-            case "$state" in
-              MERGEABLE:CLEAN)
-                if err=$(gh pr merge "$prn" --repo "$repo" --squash 2>&1); then
-                  merged=$((merged+1))
-                  if [ "$REMOVE_PR_LABEL" = "true" ]; then
-                    gh pr edit "$prn" --repo "$repo" --remove-label "$LABEL" || true
-                  fi
-                  gh pr comment "$prn" --repo "$repo" \
-                    --body "🔀 Merged (CI: ${CI_RUN_URL:-run})" || true
-                  echo "✅ merged PR #$prn (issue-less)"
-                else
-                  skipped=$((skipped+1))
-                  echo "❌ merge of #$prn failed: $err"
-                fi
-                ;;
-              MERGEABLE:BEHIND)
-                skipped=$((skipped+1)); echo "⏳ PR #$prn behind main — the SM (silent-update-behind) refreshes it, then re-dispatches CI"
-                ;;
-              MERGEABLE:BLOCKED|MERGEABLE:UNSTABLE)
-                skipped=$((skipped+1)); echo "⏳ PR #$prn required checks not green yet"
-                ;;
-              *)
-                skipped=$((skipped+1)); echo "⛔ PR #$prn not mergeable ($state) — needs manual attention"
-                ;;
-            esac
-            echo "::endgroup::"
-          done
-          echo "summary: merged=$merged skipped=$skipped"
+          }
+          AGENTS_TAG="$(resolve_tag IstiN/dmtools-agents "$AGENTS_VERSION")"
+          DMTOOLS_TAG="$(resolve_tag epam/dmtools-dart "$DMTOOLS_VERSION")"
+          echo "AGENTS_TAG=${AGENTS_TAG}" >> "$GITHUB_ENV"
+          echo "DMTOOLS_TAG=${DMTOOLS_TAG}" >> "$GITHUB_ENV"
+          echo "agents pack release: ${AGENTS_TAG} (knob: ${AGENTS_VERSION})"
+          echo "dmtools CLI release: ${DMTOOLS_TAG} (knob: ${DMTOOLS_VERSION})"
+
+      - name: Install dmtools CLI (release bundle)
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          curl -fsSL "https://github.com/epam/dmtools-dart/releases/download/${DMTOOLS_TAG}/install.sh" \
+            -o /tmp/dmtools-install.sh
+          bash /tmp/dmtools-install.sh "${DMTOOLS_TAG}"
+          echo "$HOME/.dmtools/bin" >> "$GITHUB_PATH"
+
+      - name: Merge issues labeled pr_approved
+        if: steps.gate.outputs.enabled == 'true'
+        # Runs as a VERSIONED AGENT PACK (merge_trigger@latest): the pack
+        # carries mergeTrigger.js + merge_trigger.json, sha256-verified
+        # against the release catalog. NO checkout — the sweep is pure
+        # GitHub API via the github_* tool bridge; the workflow inputs map
+        # into the jobParams override.
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
+          CI_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          export DMTOOLS_PACK_REGISTRY="https://github.com/IstiN/dmtools-agents/releases/download/${AGENTS_TAG}"
+          repo='${{ github.repository }}'
+          override=$(cat <<EOF
+          {"params":{"jobParams":{"repo":"${repo}","label":"pr_approved","mapPrLabels":${{ inputs.map_pr_labels }},"ghBranchPattern":${{ inputs.gh_branch_pattern }},"removePrLabel":${{ inputs.remove_pr_label }},"ciRunUrl":"${CI_RUN_URL}"}}}
+          EOF
+          )
+          dmtools run merge_trigger@latest "$override"
