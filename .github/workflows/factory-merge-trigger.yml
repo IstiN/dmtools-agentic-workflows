@@ -108,9 +108,13 @@ jobs:
           orphan_prs=""
           if [ "$MAP_PR_LABELS" = "true" ]; then
             prs_labeled=$(gh pr list --repo "$repo" --label "$LABEL" --state open \
-              --json number,body,headRefName --jq '.[] | "\(.number)\t\(.body // "")\t\(.headRefName)"')
+              --json number,body,headRefName --jq '.[] | "\(.number)\t\((.body // "") | gsub("[\r\n\t]+"; " "))\t\(.headRefName)"')
             while IFS=$'\t' read -r prn body branch; do
-              [ -n "$prn" ] || continue
+              # Body is newline/tab-sanitized in jq above; guard anyway —
+              # a malformed record must never reach gh (live: fa 2026-10-05,
+              # a body's '###' markdown line became prn='###' and the
+              # gh call failed the whole job under set -e).
+              [[ "$prn" =~ ^[0-9]+$ ]] || continue
               n=$(echo "$body" | grep -oiE '\b(closes|fixes|resolves|part of)\s+#[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
               [ -n "$n" ] || n=$(echo "$branch" | grep -oE '^[0-9]+' || true)
               [ -n "$n" ] || n=$(echo "$branch" | grep -oE 'gh-[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
@@ -180,7 +184,7 @@ jobs:
           # machine PRs, or the issue already closed) merge directly — there
           # is no issue to un-label or comment on.
           for prn in $orphan_prs; do
-            [ -n "$prn" ] || continue
+            [[ "$prn" =~ ^[0-9]+$ ]] || continue
             echo "::group::PR #$prn (no linked open issue)"
             state=$(gh pr view "$prn" --repo "$repo" \
               --json mergeable,mergeStateStatus \
