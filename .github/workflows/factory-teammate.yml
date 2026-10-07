@@ -445,6 +445,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PACK_TAG: ${{ vars.DMTOOLS_PACK_REGISTRY }}
+          # awf#25: AGENTS_VERSION is the documented pin knob (same
+          # semantics as factory-sm.yml) — when pinned to a concrete
+          # agents-rel-* tag it takes PRECEDENCE over the registry
+          # variable for the setup pack AND the runtime pack registry.
+          AGENTS_KNOB: ${{ vars.AGENTS_VERSION || 'latest' }}
         run: |
           set -eu
           # Compat branch: mounted tree wins, untouched.
@@ -453,10 +458,18 @@ jobs:
             echo "FACTORY_ROOT=${GITHUB_WORKSPACE}/factory-agents" >> "$GITHUB_ENV"
             exit 0
           fi
+          # awf#25 pin parity: a pinned fleet must never float to newest
+          # pack content through a floating registry base. AGENTS_KNOB
+          # (concrete tag) wins; 'latest'/unset keeps the historical
+          # PACK_TAG resolution below.
+          if [ -n "${AGENTS_KNOB}" ] && [ "${AGENTS_KNOB}" != "latest" ]; then
+            tag="${AGENTS_KNOB}"
+          else
+            tag="${PACK_TAG}"
+          fi
           # DMTOOLS_PACK_REGISTRY is the dm.ai #579 RESOLVER format — a
           # releases BASE URL (…/releases/latest/download) or a tag URL;
           # only a bare tag can feed `gh release download` directly.
-          tag="${PACK_TAG}"
           case "${tag}" in
             http*)
               # …/releases/tag/<tag> pins exactly; anything else (/latest/,
@@ -485,6 +498,10 @@ jobs:
           [ -f "${dir}/configs/pr_review.json" ] || { echo "::error::factory-setup incomplete at ${tag} (no configs/)"; exit 1; }
           echo "→ factory-setup from ${tag} (FACTORY_ROOT=${dir})"
           echo "FACTORY_ROOT=${dir}" >> "$GITHUB_ENV"
+          # awf#25: the resolved tag feeds the runtime pack registry (see
+          # the agent-run step) — setup content and pack content pin
+          # together from this point on.
+          echo "RESOLVED_AGENTS_TAG=${tag}" >> "$GITHUB_ENV"
 
       - name: "Fetch factory kit (this repo @ invocation ref — immutable)"
         # Trust-boundary scripts (git push guard, source PAT credentials)
@@ -902,6 +919,17 @@ jobs:
           # events created with GITHUB_TOKEN do not trigger workflows.
           GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN || github.token }}
         run: |
+          # awf#25 pin parity: when the setup resolved a concrete
+          # agents-rel-* tag, the runtime registry base must point at
+          # THAT release (catalog + zips + .sha256 sidecars), not the
+          # floating repo variable — otherwise `<agent>@latest` refs
+          # bypass the pin and a broken newest release takes down pinned
+          # fleets (live: fa pr-1350 review leg 2026-10-06). Mirrors
+          # factory-sm.yml's tick export and merge-trigger's derive.
+          if [ -n "${RESOLVED_AGENTS_TAG:-}" ]; then
+            export DMTOOLS_PACK_REGISTRY="https://github.com/IstiN/dmtools-agents/releases/download/${RESOLVED_AGENTS_TAG}"
+            echo "→ pack registry pinned to ${RESOLVED_AGENTS_TAG} (AGENTS_VERSION parity, awf#25)"
+          fi
           # #542 mechanical guard: interpose the git push/commit guard shim at
           # the FRONT of PATH before `dmtools run` so EVERY push path in the
           # session is covered — both the fa agent's own shell tool (inherits
