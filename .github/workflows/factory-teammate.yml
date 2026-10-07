@@ -125,6 +125,14 @@ jobs:
           # history walks. fetch-depth 0 cloned the FULL history here
           # (~1 min on fa, every leg) for nothing.
           fetch-depth: 1
+      # Self-hosted / CodeBuild runners do not ship `node`; the check step
+      # below evaluates .dmtools/config.js with `node -e`. Without node the
+      # error is swallowed (2>/dev/null || true) and surfaces as a misleading
+      # "sm.runners missing in .dmtools/config.js".
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: Decide whether this event is for the agent
         id: check
         env:
