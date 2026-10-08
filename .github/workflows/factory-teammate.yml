@@ -1058,6 +1058,105 @@ jobs:
           RC=${PIPESTATUS[0]}
           exit "${RC}"
 
+      - name: Publish leg token usage (fa-tokens ledger -> factory-data)
+        # Factory-board token spend (dmtools-agents#781 producer side): the
+        # fa CLI prints a `fa-tokens:` ledger line per session segment into
+        # the run output; sum them and append one row per leg under
+        # data/fa-tokens.json on the factory-data branch — the shape the SM
+        # tick's fetchTokensFromBranch consumes (card.tokens rows
+        # {leg, at, prompt, completion, total}, key 'pr-N'/'issue-N').
+        # Tokens are decorative: ANY miss (no ledger line, 404 first
+        # publish, conflict after retries) warns and moves on — this step
+        # must never redden a green leg nor gate a failed one. always():
+        # the cost happened even when the agent run above failed/timed out.
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+          ANCHOR: ${{ needs.guard.outputs.anchor }}
+          KIND: ${{ needs.guard.outputs.kind }}
+          RUN_OUTPUT: ${{ github.workspace }}/.dmtools/run-output.txt
+          DATA_BRANCH: factory-data
+          DATA_PATH: data/fa-tokens.json
+        run: |
+          set -eu
+          if [ ! -s "${RUN_OUTPUT}" ]; then
+            echo "::warning::no run output captured — skipping token publish"
+            exit 0
+          fi
+          # Sum every fa-tokens ledger line (resume-aware: one line per
+          # session segment). Balanced-brace JSON after the marker.
+          read -r SUM_IN SUM_OUT < <(python3 - "${RUN_OUTPUT}" <<'PY' || true
+          import json, re, sys
+          inp = out = 0
+          try:
+              text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+          except OSError:
+              print(0, 0); raise SystemExit
+          for m in re.finditer(r"fa-tokens:[ \t]*(\{)", text):
+              depth, i = 0, m.start(1)
+              for i in range(m.start(1), len(text)):
+                  if text[i] == "{": depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                      if depth == 0: break
+              try:
+                  rec = json.loads(text[m.start(1):i + 1])
+                  inp += int(rec.get("input") or 0)
+                  out += int(rec.get("output") or 0)
+              except Exception:
+                  continue
+          print(inp, out)
+          PY
+          ) || true
+          SUM_IN="${SUM_IN:-0}"
+          SUM_OUT="${SUM_OUT:-0}"
+          if [ "${SUM_IN}" = "0" ] && [ "${SUM_OUT}" = "0" ]; then
+            echo "::warning::no fa-tokens ledger line in run output — skipping token publish"
+            exit 0
+          fi
+          case "${ANCHOR}" in
+            pr-*) KEY="${ANCHOR}" ;;
+            gh-*) KEY="issue-${ANCHOR#gh-}" ;;
+            *) echo "::warning::unrecognized anchor '${ANCHOR}' — skipping token publish"; exit 0 ;;
+          esac
+          AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ROW="$(printf '{"leg":"%s","at":"%s","prompt":%s,"completion":%s,"total":%s}' \
+            "${KIND:-dev}" "${AT}" "${SUM_IN}" "${SUM_OUT}" "$((SUM_IN + SUM_OUT))")"
+          echo "leg tokens: ${KEY} ${KIND:-dev} prompt=${SUM_IN} completion=${SUM_OUT}"
+          # Bootstrap the data branch exactly like the tick's state publish
+          # (422 "already exists" is the normal case) — then PUT with the
+          # existing sha; 3 attempts absorb concurrent leg publishes.
+          gh api "repos/${REPO}/git/ref/heads/$(gh api "repos/${REPO}" --jq .default_branch)" \
+            --jq .object.sha \
+            | xargs -I{} gh api -X POST "repos/${REPO}/git/refs" -f ref="refs/heads/${DATA_BRANCH}" -f sha={} || true
+          ok=0
+          for attempt in 1 2 3; do
+            SHA=""
+            CUR="{}"
+            if META="$(gh api "repos/${REPO}/contents/${DATA_PATH}?ref=${DATA_BRANCH}" 2>/dev/null)"; then
+              SHA="$(printf %s "${META}" | jq -r .sha)"
+              CUR="$(printf %s "${META}" | jq -r .content | tr -d '\n' | base64 -d 2>/dev/null || echo '{}')"
+              printf %s "${CUR}" | jq empty >/dev/null 2>&1 || CUR='{}'
+            fi
+            CUTOFF="$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%SZ'))")"
+            NEXT="$(printf %s "${CUR}" | jq --argjson row "${ROW}" --arg key "${KEY}" --arg cutoff "${CUTOFF}" \
+              '.[$key] = ((.[$key] // []) + [$row])
+               | with_entries(.value |= (map(select((.at // "") >= $cutoff)) | .[-40:]))
+               | with_entries(select(.value | length > 0))')"
+            ARGS=(api -X PUT "repos/${REPO}/contents/${DATA_PATH}"
+              -f branch="${DATA_BRANCH}"
+              -f message="leg tokens — ${KEY} ${KIND:-dev} [skip ci]"
+              -f content="$(printf %s "${NEXT}" | base64)")
+            if [ -n "${SHA}" ]; then ARGS+=(-f sha="${SHA}"); fi
+            if gh "${ARGS[@]}"; then ok=1; break; fi
+            echo "token publish attempt ${attempt} conflicted — refetching"
+            sleep $((attempt * 2))
+          done
+          if [ "${ok}" != "1" ]; then
+            echo "::warning::token publish gave up after 3 attempts (concurrent writes) — rows are decorative, next legs retry"
+          fi
+
       - name: Mark machine job done (issue task list)
         # always(): the checkbox flips even when the agent run above timed
         # out, was cancelled, or failed — the marker can never dangle.
