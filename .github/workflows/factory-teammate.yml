@@ -1075,6 +1075,7 @@ jobs:
           REPO: ${{ github.repository }}
           ANCHOR: ${{ needs.guard.outputs.anchor }}
           KIND: ${{ needs.guard.outputs.kind }}
+          CONFIG: ${{ needs.guard.outputs.config }}
           RUN_OUTPUT: ${{ github.workspace }}/.dmtools/run-output.txt
           DATA_BRANCH: factory-data
           DATA_PATH: data/fa-tokens.json
@@ -1115,6 +1116,12 @@ jobs:
             echo "::warning::no fa-tokens ledger line in run output — skipping token publish"
             exit 0
           fi
+          # The guard collapses the rework slot into kind="dev" (rework legs run the
+          # dev pipeline); recover the true leg from the runner config basename.
+          case "$(basename "${CONFIG:-}" .json)" in
+            *rework*) LEG="rework" ;;
+            *) LEG="${KIND:-dev}" ;;
+          esac
           case "${ANCHOR}" in
             pr-*) KEY="${ANCHOR}" ;;
             gh-*) KEY="issue-${ANCHOR#gh-}" ;;
@@ -1122,8 +1129,8 @@ jobs:
           esac
           AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           ROW="$(printf '{"leg":"%s","at":"%s","prompt":%s,"completion":%s,"total":%s}' \
-            "${KIND:-dev}" "${AT}" "${SUM_IN}" "${SUM_OUT}" "$((SUM_IN + SUM_OUT))")"
-          echo "leg tokens: ${KEY} ${KIND:-dev} prompt=${SUM_IN} completion=${SUM_OUT}"
+            "${LEG}" "${AT}" "${SUM_IN}" "${SUM_OUT}" "$((SUM_IN + SUM_OUT))")"
+          echo "leg tokens: ${KEY} ${LEG} prompt=${SUM_IN} completion=${SUM_OUT}"
           # Bootstrap the data branch exactly like the tick's state publish
           # (422 "already exists" is the normal case) — then PUT with the
           # existing sha; 3 attempts absorb concurrent leg publishes.
@@ -1146,7 +1153,7 @@ jobs:
                | with_entries(select(.value | length > 0))')"
             ARGS=(api -X PUT "repos/${REPO}/contents/${DATA_PATH}"
               -f branch="${DATA_BRANCH}"
-              -f message="leg tokens — ${KEY} ${KIND:-dev} [skip ci]"
+              -f message="leg tokens — ${KEY} ${LEG} [skip ci]"
               -f content="$(printf %s "${NEXT}" | base64)")
             if [ -n "${SHA}" ]; then ARGS+=(-f sha="${SHA}"); fi
             if gh "${ARGS[@]}"; then ok=1; break; fi
