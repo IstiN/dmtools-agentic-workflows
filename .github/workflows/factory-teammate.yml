@@ -1090,10 +1090,11 @@ jobs:
           read -r SUM_IN SUM_OUT < <(python3 - "${RUN_OUTPUT}" <<'PY' || true
           import json, re, sys
           inp = out = 0
+          model = ""
           try:
               text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
           except OSError:
-              print(0, 0); raise SystemExit
+              print(0, 0, ""); raise SystemExit
           for m in re.finditer(r"fa-tokens:[ \t]*(\{)", text):
               depth, i = 0, m.start(1)
               for i in range(m.start(1), len(text)):
@@ -1105,13 +1106,20 @@ jobs:
                   rec = json.loads(text[m.start(1):i + 1])
                   inp += int(rec.get("input") or 0)
                   out += int(rec.get("output") or 0)
+                  # last-seen model wins (fa ledger carries it once gh-1241
+                  # grows the field; absent today — stay empty, consumers
+                  # render tokens-only)
+                  if rec.get("model"):
+                      model = str(rec["model"])
               except Exception:
                   continue
-          print(inp, out)
+          print(inp, out, model)
           PY
           ) || true
           SUM_IN="${SUM_IN:-0}"
           SUM_OUT="${SUM_OUT:-0}"
+          MODEL="$(echo "${SUM_OUT}" | awk '{print $3}')"
+          SUM_OUT="$(echo "${SUM_OUT}" | awk '{print $2}')"
           if [ "${SUM_IN}" = "0" ] && [ "${SUM_OUT}" = "0" ]; then
             echo "::warning::no fa-tokens ledger line in run output — skipping token publish"
             exit 0
@@ -1128,9 +1136,9 @@ jobs:
             *) echo "::warning::unrecognized anchor '${ANCHOR}' — skipping token publish"; exit 0 ;;
           esac
           AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          ROW="$(printf '{"leg":"%s","at":"%s","prompt":%s,"completion":%s,"total":%s}' \
-            "${LEG}" "${AT}" "${SUM_IN}" "${SUM_OUT}" "$((SUM_IN + SUM_OUT))")"
-          echo "leg tokens: ${KEY} ${LEG} prompt=${SUM_IN} completion=${SUM_OUT}"
+          ROW="$(printf '{"leg":"%s","at":"%s","prompt":%s,"completion":%s,"total":%s,"model":"%s"}' \
+            "${LEG}" "${AT}" "${SUM_IN}" "${SUM_OUT}" "$((SUM_IN + SUM_OUT))" "${MODEL}")"
+          echo "leg tokens: ${KEY} ${LEG} prompt=${SUM_IN} completion=${SUM_OUT} model=${MODEL:-none}"
           # Bootstrap the data branch exactly like the tick's state publish
           # (422 "already exists" is the normal case) — then PUT with the
           # existing sha; 3 attempts absorb concurrent leg publishes.
