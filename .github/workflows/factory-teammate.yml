@@ -1087,7 +1087,7 @@ jobs:
           fi
           # Sum every fa-tokens ledger line (resume-aware: one line per
           # session segment). Balanced-brace JSON after the marker.
-          read -r SUM_IN SUM_OUT < <(python3 - "${RUN_OUTPUT}" <<'PY' || true
+          read -r SUM_IN SUM_OUT MODEL < <(python3 - "${RUN_OUTPUT}" <<'PY' || true
           import json, re, sys
           inp = out = 0
           model = ""
@@ -1118,8 +1118,7 @@ jobs:
           ) || true
           SUM_IN="${SUM_IN:-0}"
           SUM_OUT="${SUM_OUT:-0}"
-          MODEL="$(echo "${SUM_OUT}" | awk '{print $3}')"
-          SUM_OUT="$(echo "${SUM_OUT}" | awk '{print $2}')"
+          MODEL="${MODEL:-}"
           if [ "${SUM_IN}" = "0" ] && [ "${SUM_OUT}" = "0" ]; then
             echo "::warning::no fa-tokens ledger line in run output — skipping token publish"
             exit 0
