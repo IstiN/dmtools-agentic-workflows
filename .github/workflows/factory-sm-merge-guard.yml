@@ -1,0 +1,91 @@
+# Factory SM merge guard — canonical home (reusable).
+#
+# The cheap alarm for the SM serialized-validation invariant (gh-1537 AC5,
+# bugs fixed gh-1568): with the post-merge main CI run retired, nothing
+# else stands between a violated invariant ("SM queue is strictly
+# serialized and validates the exact tree being merged") and a red main.
+# This workflow fires on EVERY push to main (via the caller repo's thin
+# stub) and asserts the pushed tree was covered by a successful
+# workflow_dispatch run of the repo's validation CI — the SM's pre-merge
+# validation. A push without one files/updates one deduplicated
+# `sm-guard` issue (event-driven, seconds of runner time — explicitly NOT
+# a nightly/polling backstop, per the owner's directive).
+#
+# A `chore(release):` bump push skips the guard (defense-in-depth). SM
+# merge commits and any human/admin push are checked — tree identity, so
+# both fast-forward (same SHA) and squash/merge-commit (same tree)
+# landings validate.
+#
+# Canonical home pattern (same as factory-sm-kicker.yml): the calling
+# repo keeps a thin stub workflow with its own `on: push: [main]`
+# trigger that calls this one with repo-specific inputs.
+name: Factory SM merge guard
+
+on:
+  workflow_call:
+    inputs:
+      ci_workflow:
+        description: 'File name of the validation CI workflow the SM dispatches (ci.yml, quality.yml, ...)'
+        type: string
+        default: 'ci.yml'
+      window_hours:
+        description: 'How far back dispatched validation runs certify a push'
+        type: number
+        default: 24
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Validate the pushed tree was SM-validated
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # the sm-guard alarm issue
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The CALLER repository, pinned to the SAME frozen identity
+          # PUSHED_SHA uses (github.event.head_commit.id || github.sha):
+          # the tree under assertion is read from this checkout's HEAD,
+          # so an unpinned checkout could drift to a moved main and have
+          # run-for-push-A certify a newer push B's tree it never examined
+          # (same lesson as the retired ci.yml release-tag BUMP_SHA pin).
+          ref: ${{ github.event.head_commit.id || github.sha }}
+          # Only the pushed tree sha is read — no history, no blobs.
+          fetch-depth: 1
+
+      - name: Fetch the canonical guard script (factory home @ main)
+        # Always-latest policy (owner 2026-10-04, kicker parity): guard
+        # fixes go live on merge, no re-pin ceremony. The script is
+        # hermetic (gh + python3 only), so a main ref here is the same
+        # trust level as `uses: ...factory-*.yml@main` in the stubs.
+        run: |
+          curl -fsSL \
+            "https://raw.githubusercontent.com/IstiN/dmtools-agentic-workflows/main/scripts/sm_merge_guard.py" \
+            -o "$RUNNER_TEMP/sm_merge_guard.py"
+
+      - name: Assert a dispatched validation covers this tree
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CI_WORKFLOW: ${{ inputs.ci_workflow }}
+          WINDOW_HOURS: ${{ inputs.window_hours }}
+          # head_commit.id is frozen at push time — the checkout can
+          # drift to a main that moved in the seconds before the job
+          # starts (same lesson as the retired ci.yml release-tag
+          # BUMP_SHA pin, #1178).
+          PUSHED_SHA: ${{ github.event.head_commit.id || github.sha }}
+          PUSHED_SUBJECT: ${{ github.event.head_commit.message }}
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          python3 "$RUNNER_TEMP/sm_merge_guard.py" \
+            --repo "$REPO" \
+            --sha "$PUSHED_SHA" \
+            --subject "$PUSHED_SUBJECT" \
+            --tree "$tree" \
+            --workflow "$CI_WORKFLOW" \
+            --window-hours "$WINDOW_HOURS" \
+            --alarm-issue
