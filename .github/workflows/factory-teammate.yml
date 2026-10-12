@@ -23,7 +23,7 @@
 #
 # Secrets (via `secrets: inherit`): SOURCE_GITHUB_TOKEN (PAT — labels added
 #   with GITHUB_TOKEN never fire `labeled` events; pushes must not author
-#   as github-actions[bot]), ZAI_CODE_KEY, KIMI_REVIEW_KEY.
+#   as github-actions[bot]), ZAI_CODE_KEY, KIMI_REVIEW_KEY, CUSTOM_PROVIDER_KEY (JSON {ENV_NAME:key}).
 # Vars: FA_VERSION_MACHINE || FA_VERSION || latest, DMTOOLS_VERSION,
 #   MAX_AUTO_REWORK_ROUNDS (default 2).
 #
@@ -92,6 +92,9 @@ on:
         required: false
       KIMI_REVIEW_KEY:
         description: 'kimi API key (review provider, first in the queue)'
+        required: false
+      CUSTOM_PROVIDER_KEY:
+        description: 'Universal provider-key passthrough: ONE secret holding a JSON object {"ENV_NAME":"api key"} — each entry lands masked in the agent job env (any apiKeyEnv name, no factory change per provider).'
         required: false
 
 # NOTE: no `concurrency` here — the caller stub owns the per-issue group.
@@ -575,6 +578,38 @@ jobs:
           done
           echo "::error::no parent config for '${agent}': neither ~/.dmtools/packs/${agent}-*/launch.json nor ${FACTORY_ROOT}/${agent}.json nor ${FACTORY_ROOT}/configs/${agent}.json exists — no Wave-2 pack unpacked and the factory-setup legacy configs are missing"
           exit 1
+
+      - name: Decode CUSTOM_PROVIDER_KEY (repo-specific provider keys → job env)
+        # Universal passthrough: a repo adds ONE secret CUSTOM_PROVIDER_KEY
+        # holding a JSON object {"ENV_NAME":"api key"}; every entry lands in
+        # the job env (each value explicitly masked — inner values are not
+        # registered secrets, GitHub would not mask them otherwise). Runner
+        # configs then reference any apiKeyEnv name without factory changes.
+        env:
+          CUSTOM_PROVIDER_KEY: ${{ secrets.CUSTOM_PROVIDER_KEY }}
+        run: |
+          if [ -z "${CUSTOM_PROVIDER_KEY:-}" ]; then
+            echo "→ no CUSTOM_PROVIDER_KEY secret — provider passthrough skipped"
+            exit 0
+          fi
+          if ! printf '%s' "${CUSTOM_PROVIDER_KEY}" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            echo "::error::CUSTOM_PROVIDER_KEY must be a JSON object {\"ENV_NAME\":\"key value\"}"
+            exit 1
+          fi
+          bad=0
+          while read -r row; do
+            k=$(printf '%s' "$row" | base64 -d | jq -r '.key')
+            v=$(printf '%s' "$row" | base64 -d | jq -r '.value')
+            case "$k" in ''|*[!A-Z0-9_]*)
+              echo "::error::CUSTOM_PROVIDER_KEY entry '${k}' is not a valid ENV name (A-Z0-9_)"
+              bad=1
+              continue ;;
+            esac
+            echo "::add-mask::${v}"
+            printf '%s=%s\n' "$k" "$v" >> "$GITHUB_ENV"
+            echo "→ provider key '${k}' exported (value masked)"
+          done < <(printf '%s' "${CUSTOM_PROVIDER_KEY}" | jq -r 'to_entries[] | @base64')
+          exit "$bad"
 
       - name: Export fa session identity + cache keys
         # AI_TEAMMATE_CONFIG_FILE comes from the resolve step above
