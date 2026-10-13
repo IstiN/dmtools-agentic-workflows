@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# pkill stub: record the pattern, report "no processes matched" (both A/B
+# sides see identical recorded behavior; callers `|| true` anyway).
+printf 'pkill %s\n' "$*" >> "${PKILL_LOG:-/dev/null}"
+exit 1
