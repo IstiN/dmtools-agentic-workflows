@@ -93,9 +93,6 @@ on:
       KIMI_REVIEW_KEY:
         description: 'kimi API key (review provider, first in the queue)'
         required: false
-      COPILOT_EPAM_KEY:
-        description: 'Copilot enterprise GitHub token (copilot provider, first in the queue) — plain repo secret, runner-masked natively (owner decision 2026-10-13: named inputs over the CUSTOM_PROVIDER_KEY envelope, awf#30 superseded).'
-        required: false
 
 # NOTE: no `concurrency` here — the caller stub owns the per-issue group.
 # A reusable workflow with the SAME group as its caller deadlocks: the caller
@@ -910,7 +907,6 @@ jobs:
           AI_TEAMMATE_CONCURRENCY_KEY: ${{ needs.guard.outputs.anchor }}
           ZAI_CODE_KEY: ${{ secrets.ZAI_CODE_KEY }}
           KIMI_REVIEW_KEY: ${{ secrets.KIMI_REVIEW_KEY }}
-          COPILOT_EPAM_KEY: ${{ secrets.COPILOT_EPAM_KEY }}
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
           # Agent-pack registry base (dm.ai #579): runners may parent packs
           # by REGISTRY ref (`pr_review@latest`) — the resolver reads the
