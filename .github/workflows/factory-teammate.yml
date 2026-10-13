@@ -1087,14 +1087,14 @@ jobs:
           fi
           # Sum every fa-tokens ledger line (resume-aware: one line per
           # session segment). Balanced-brace JSON after the marker.
-          read -r SUM_IN SUM_OUT MODEL < <(python3 - "${RUN_OUTPUT}" <<'PY' || true
+          read -r SUM_IN SUM_OUT SUM_CR MODEL < <(python3 - "${RUN_OUTPUT}" <<'PY' || true
           import json, re, sys
-          inp = out = 0
+          inp = out = cr = 0
           model = ""
           try:
               text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
           except OSError:
-              print(0, 0, ""); raise SystemExit
+              print(0, 0, 0, ""); raise SystemExit
           for m in re.finditer(r"fa-tokens:[ \t]*(\{)", text):
               depth, i = 0, m.start(1)
               for i in range(m.start(1), len(text)):
@@ -1106,6 +1106,10 @@ jobs:
                   rec = json.loads(text[m.start(1):i + 1])
                   inp += int(rec.get("input") or 0)
                   out += int(rec.get("output") or 0)
+                  # fa-tokens carries cacheRead per segment (gh-1241); the
+                  # board prices it (model-pricing cacheRead rates) and
+                  # renders an `input cached` column — sum it like in/out.
+                  cr += int(rec.get("cacheRead") or 0)
                   # last-seen model wins (fa ledger carries it once gh-1241
                   # grows the field; absent today — stay empty, consumers
                   # render tokens-only)
@@ -1113,11 +1117,12 @@ jobs:
                       model = str(rec["model"])
               except Exception:
                   continue
-          print(inp, out, model)
+          print(inp, out, cr, model)
           PY
           ) || true
           SUM_IN="${SUM_IN:-0}"
           SUM_OUT="${SUM_OUT:-0}"
+          SUM_CR="${SUM_CR:-0}"
           MODEL="${MODEL:-}"
           if [ "${SUM_IN}" = "0" ] && [ "${SUM_OUT}" = "0" ]; then
             echo "::warning::no fa-tokens ledger line in run output — skipping token publish"
@@ -1135,9 +1140,9 @@ jobs:
             *) echo "::warning::unrecognized anchor '${ANCHOR}' — skipping token publish"; exit 0 ;;
           esac
           AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          ROW="$(printf '{"leg":"%s","at":"%s","prompt":%s,"completion":%s,"total":%s,"model":"%s"}' \
-            "${LEG}" "${AT}" "${SUM_IN}" "${SUM_OUT}" "$((SUM_IN + SUM_OUT))" "${MODEL}")"
-          echo "leg tokens: ${KEY} ${LEG} prompt=${SUM_IN} completion=${SUM_OUT} model=${MODEL:-none}"
+          ROW="$(printf '{"leg":"%s","at":"%s","prompt":%s,"completion":%s,"total":%s,"cacheRead":%s,"model":"%s"}' \
+            "${LEG}" "${AT}" "${SUM_IN}" "${SUM_OUT}" "$((SUM_IN + SUM_OUT))" "${SUM_CR}" "${MODEL}")"
+          echo "leg tokens: ${KEY} ${LEG} prompt=${SUM_IN} completion=${SUM_OUT} cached=${SUM_CR} model=${MODEL:-none}"
           # Bootstrap the data branch exactly like the tick's state publish
           # (422 "already exists" is the normal case) — then PUT with the
           # existing sha; 3 attempts absorb concurrent leg publishes.
