@@ -93,6 +93,25 @@ on:
       KIMI_REVIEW_KEY:
         description: 'kimi API key (review provider, first in the queue)'
         required: false
+      CUSTOM_PROVIDER_KEY1:
+        description: 'Generic provider-key slot 1 — value lands in the agent job env under CUSTOM_PROVIDER_KEY1_NAME. The factory never knows key names; the caller stub documents which repo secret maps here.'
+        required: false
+      CUSTOM_PROVIDER_KEY2:
+        description: 'Generic provider-key slot 2 — see CUSTOM_PROVIDER_KEY1.'
+        required: false
+      CUSTOM_PROVIDER_KEY3:
+        description: 'Generic provider-key slot 3 — see CUSTOM_PROVIDER_KEY1.'
+        required: false
+    inputs:
+      CUSTOM_PROVIDER_KEY1_NAME:
+        description: 'Env var name for slot 1 (plain input, not secret).'
+        required: false
+      CUSTOM_PROVIDER_KEY2_NAME:
+        description: 'Env var name for slot 2 (plain input, not secret).'
+        required: false
+      CUSTOM_PROVIDER_KEY3_NAME:
+        description: 'Env var name for slot 3 (plain input, not secret).'
+        required: false
 
 # NOTE: no `concurrency` here — the caller stub owns the per-issue group.
 # A reusable workflow with the SAME group as its caller deadlocks: the caller
@@ -884,6 +903,40 @@ jobs:
           fi
           gh issue edit "$NUMBER" --repo "$repo" --body-file /tmp/issue_body.md
           echo "job marker added: $line"
+
+      - name: Export custom provider key slots (1-3) → job env
+        # Generic numbered slots (owner decision 2026-10-13): the factory
+        # never hardcodes provider key names — the caller stub maps each
+        # slot from a plain repo secret and names the env var it lands as
+        # (the stub comment documents the slot→key mapping). Values ride
+        # the secrets context → runner-masked natively in every log; empty
+        # slots are skipped, half-configured slots warn.
+        env:
+          CUSTOM_PROVIDER_KEY1: ${{ secrets.CUSTOM_PROVIDER_KEY1 }}
+          CUSTOM_PROVIDER_KEY1_NAME: ${{ inputs.CUSTOM_PROVIDER_KEY1_NAME }}
+          CUSTOM_PROVIDER_KEY2: ${{ secrets.CUSTOM_PROVIDER_KEY2 }}
+          CUSTOM_PROVIDER_KEY2_NAME: ${{ inputs.CUSTOM_PROVIDER_KEY2_NAME }}
+          CUSTOM_PROVIDER_KEY3: ${{ secrets.CUSTOM_PROVIDER_KEY3 }}
+          CUSTOM_PROVIDER_KEY3_NAME: ${{ inputs.CUSTOM_PROVIDER_KEY3_NAME }}
+        run: |
+          i=1
+          while [ "$i" -le 3 ]; do
+            val_var="CUSTOM_PROVIDER_KEY${i}"
+            name_var="CUSTOM_PROVIDER_KEY${i}_NAME"
+            val="${!val_var:-}"
+            name="${!name_var:-}"
+            if [ -n "$val" ] && [ -n "$name" ]; then
+              case "$name" in *[!A-Z0-9_]*|"")
+                echo "::error::CUSTOM_PROVIDER_KEY${i}_NAME '${name}' is not a valid env name (A-Z0-9_)"
+                exit 1 ;;
+              esac
+              printf '%s=%s\n' "$name" "$val" >> "$GITHUB_ENV"
+              echo "→ slot ${i} exported as ${name} (value runner-masked)"
+            elif [ -n "$val" ] || [ -n "$name" ]; then
+              echo "::warning::CUSTOM_PROVIDER_KEY${i}: value without NAME (or NAME without value) — slot skipped"
+            fi
+            i=$((i + 1))
+          done
 
       - name: Run agent (fa provider via runner env overrides)
         id: run_agent
