@@ -83,6 +83,16 @@ on:
         default: ''
         type: string
 
+      CUSTOM_PROVIDER_KEY1_NAME:
+        description: 'Env var name for slot 1 (plain input, not secret).'
+        required: false
+      CUSTOM_PROVIDER_KEY2_NAME:
+        description: 'Env var name for slot 2 (plain input, not secret).'
+        required: false
+      CUSTOM_PROVIDER_KEY3_NAME:
+        description: 'Env var name for slot 3 (plain input, not secret).'
+        required: false
+
     secrets:
       SOURCE_GITHUB_TOKEN:
         description: 'PAT with repo scope — machine labels, pushes, PR/issue API (secrets: inherit does not cross repository boundaries).'
@@ -101,16 +111,6 @@ on:
         required: false
       CUSTOM_PROVIDER_KEY3:
         description: 'Generic provider-key slot 3 — see CUSTOM_PROVIDER_KEY1.'
-        required: false
-    inputs:
-      CUSTOM_PROVIDER_KEY1_NAME:
-        description: 'Env var name for slot 1 (plain input, not secret).'
-        required: false
-      CUSTOM_PROVIDER_KEY2_NAME:
-        description: 'Env var name for slot 2 (plain input, not secret).'
-        required: false
-      CUSTOM_PROVIDER_KEY3_NAME:
-        description: 'Env var name for slot 3 (plain input, not secret).'
         required: false
 
 # NOTE: no `concurrency` here — the caller stub owns the per-issue group.
