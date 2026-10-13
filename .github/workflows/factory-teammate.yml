@@ -86,12 +86,15 @@ on:
       CUSTOM_PROVIDER_KEY1_NAME:
         description: 'Env var name for slot 1 (plain input, not secret).'
         required: false
+        type: string
       CUSTOM_PROVIDER_KEY2_NAME:
         description: 'Env var name for slot 2 (plain input, not secret).'
         required: false
+        type: string
       CUSTOM_PROVIDER_KEY3_NAME:
         description: 'Env var name for slot 3 (plain input, not secret).'
         required: false
+        type: string
 
     secrets:
       SOURCE_GITHUB_TOKEN:
