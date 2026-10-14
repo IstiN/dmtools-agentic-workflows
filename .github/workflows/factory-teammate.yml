@@ -48,6 +48,16 @@ name: 'Factory · AI Teammate'
 on:
   workflow_call:
     inputs:
+      # The ref THIS awf repo was invoked at — a reusable workflow runs in
+      # the CALLER's context, so github.workflow_ref carries the caller's ref
+      # (dart's branch), which is meaningless against the awf remote. The
+      # stub passes its own pin here (main in production) — same pattern as
+      # factory_ref: the factory cannot see its own uses: ref.
+      factory_home_ref:
+        description: Awf ref the caller pinned factory-teammate.yml to
+        type: string
+        required: false
+        default: main
       runner:
         description: 'Runner label (self-hosted pools must be visible to the CALLING org)'
         type: string
@@ -156,9 +166,9 @@ jobs:
         # the teammate fetch: the guard has no FACTORY_ROOT fallback, so a
         # failed delivery must red the run, not silently skip the gate.
         env:
-          AWF_REF: ${{ github.workflow_ref }}
+          AWF_REF: ${{ inputs.factory_home_ref }}
         run: |
-          ref="${AWF_REF##*@}"
+          ref="$AWF_REF"
           dir="${RUNNER_TEMP}/factory-kit"
           git init -q "$dir"
           git -C "$dir" remote add origin https://github.com/IstiN/dmtools-agentic-workflows.git
@@ -275,9 +285,9 @@ jobs:
         # 2026-10-03: PR staging, origin-sync clean-tree gate, and the
         # session timer auto-commit all tripped on it).
         env:
-          AWF_REF: ${{ github.workflow_ref }}
+          AWF_REF: ${{ inputs.factory_home_ref }}
         run: |
-          ref="${AWF_REF##*@}"
+          ref="$AWF_REF"
           dir="${RUNNER_TEMP}/factory-kit"
           git init -q "$dir"
           git -C "$dir" remote add origin https://github.com/IstiN/dmtools-agentic-workflows.git
