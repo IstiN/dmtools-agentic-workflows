@@ -247,30 +247,6 @@ jobs:
           # factory can never skew apart. Keep both in sync when flipping refs.
           echo "FACTORY_REF=${{ inputs.factory_ref }}" >> "$GITHUB_ENV"
 
-      - name: "Fetch factory-setup (dmtools-agents releases — no tree checkout)"
-        # Owner mandate 2026-10-03: the factory NEVER clones the
-        # dmtools-agents tree. The workflow glue the run needs —
-        # setup/ toolbelt (install.sh, cache.sh, review-verdict.sh,
-        # fa-session.sh, ...), scripts/git-push-guard.sh fallback and the
-        # four legacy leg configs — ships as the factory-setup-*.zip
-        # release asset (built by ci/release_packs.mjs, rides every
-        # agents-rel-* tag).
-        # Compat: a pre-mounted factory-agents/ tree still WINS over the
-        # zip — hosts that intentionally mount the tree (dmtools-agents'
-        # own factory-probe, forks pinning local trees) keep their copies.
-        # FACTORY_ROOT carries the winner for every later step.
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PACK_TAG: ${{ vars.DMTOOLS_PACK_REGISTRY }}
-          # awf#25: AGENTS_VERSION is the documented pin knob (same
-          # semantics as factory-sm.yml) — when pinned to a concrete
-          # agents-rel-* tag it takes PRECEDENCE over the registry
-          # variable for the setup pack AND the runtime pack registry.
-          AGENTS_KNOB: ${{ vars.AGENTS_VERSION || 'latest' }}
-        # Body: scripts/fetch-factory-setup.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
-        # delivered via the factory-kit fetch at the invocation ref).
-        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/fetch-factory-setup.sh"
-
       - name: "Fetch factory kit (this repo @ invocation ref — immutable)"
         # Trust-boundary scripts (git push guard, source PAT credentials)
         # ride the SAME immutable ref the caller invoked this workflow at
@@ -305,6 +281,30 @@ jobs:
           cp "$dir/kit/git-push-guard.sh" "$RUNNER_TEMP/git-probe" && chmod +x "$RUNNER_TEMP/git-probe"
           "$RUNNER_TEMP/git-probe" version >/dev/null 2>&1 \
             || { echo "::error::kit git-push-guard.sh does not execute (probe failed) at $ref"; exit 1; }
+
+      - name: "Fetch factory-setup (dmtools-agents releases — no tree checkout)"
+        # Owner mandate 2026-10-03: the factory NEVER clones the
+        # dmtools-agents tree. The workflow glue the run needs —
+        # setup/ toolbelt (install.sh, cache.sh, review-verdict.sh,
+        # fa-session.sh, ...), scripts/git-push-guard.sh fallback and the
+        # four legacy leg configs — ships as the factory-setup-*.zip
+        # release asset (built by ci/release_packs.mjs, rides every
+        # agents-rel-* tag).
+        # Compat: a pre-mounted factory-agents/ tree still WINS over the
+        # zip — hosts that intentionally mount the tree (dmtools-agents'
+        # own factory-probe, forks pinning local trees) keep their copies.
+        # FACTORY_ROOT carries the winner for every later step.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACK_TAG: ${{ vars.DMTOOLS_PACK_REGISTRY }}
+          # awf#25: AGENTS_VERSION is the documented pin knob (same
+          # semantics as factory-sm.yml) — when pinned to a concrete
+          # agents-rel-* tag it takes PRECEDENCE over the registry
+          # variable for the setup pack AND the runtime pack registry.
+          AGENTS_KNOB: ${{ vars.AGENTS_VERSION || 'latest' }}
+        # Body: scripts/fetch-factory-setup.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/fetch-factory-setup.sh"
 
       - name: "Resolve parent config (pack launch.json wins, tree fallback)"
         # Wave 2 (owner 2026-10-01): teammate packs are self-sufficient —
