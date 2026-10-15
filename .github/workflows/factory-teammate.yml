@@ -84,8 +84,9 @@ on:
         required: false
         type: string
       factory_ref:
-        description: 'The dmtools-agents ref the factory runs from (the literal in the stub uses-line). github.workflow_ref cannot serve: in a called workflow it carries the CALLER ref, not the uses-ref.'
-        required: true
+        description: 'DEPRECATED — unused. Agents come from dmtools-agents RELEASES (vars.AGENTS_VERSION, default latest). Kept optional so existing stubs that still pass it keep working.'
+        required: false
+        default: ''
         type: string
       java-version:
         description: 'JDK for agent work (Temurin, Gradle/Maven cache). "" (default) installs NOTHING. e.g. "21".'
