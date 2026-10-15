@@ -67,6 +67,12 @@ on:
       SOURCE_GITHUB_TOKEN:
         description: 'PAT with repo scope — GitHub API access for the merge bot (labels, PR state, checks, merge).'
         required: true
+      MERGE_APP_ID:
+        description: 'Optional GitHub App id. With MERGE_APP_PRIVATE_KEY the merge bot acts as the App (job-scoped installation token) instead of SOURCE_GITHUB_TOKEN — merges then trigger downstream workflows and appear as the App.'
+        required: false
+      MERGE_APP_PRIVATE_KEY:
+        description: 'Private key (PEM) of the MERGE_APP_ID GitHub App.'
+        required: false
 
 # NOTE: NO concurrency block here — deliberately. A called workflow's
 # concurrency NEVER applies (GitHub ignores it; only the caller's does),
@@ -95,6 +101,23 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      # Optional merge identity: a GitHub App token minted per run (expires with
+      # the job). Minted HERE because a token cannot cross jobs — GitHub strips
+      # secret-bearing job outputs. Absent App secrets => SOURCE_GITHUB_TOKEN.
+      - name: Detect merge App
+        id: app
+        env:
+          APP_ID: ${{ secrets.MERGE_APP_ID }}
+        run: echo "enabled=$([ -n "$APP_ID" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Mint merge App token
+        id: app-token
+        if: steps.app.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.MERGE_APP_ID }}
+          private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
 
       - name: Resolve versions (agents release + dmtools CLI)
         env:
@@ -128,8 +151,8 @@ jobs:
         # against the release catalog. CWD = target repo root (config
         # discovery parity with the old submodule checkout).
         env:
-          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
-          SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
+          SOURCE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
         run: |
           export DMTOOLS_PACK_REGISTRY="https://github.com/IstiN/dmtools-agents/releases/download/${AGENTS_TAG}"
           repo='${{ github.repository }}'
