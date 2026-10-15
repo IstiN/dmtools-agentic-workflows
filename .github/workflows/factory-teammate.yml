@@ -87,6 +87,21 @@ on:
         description: 'The dmtools-agents ref the factory runs from (the literal in the stub uses-line). github.workflow_ref cannot serve: in a called workflow it carries the CALLER ref, not the uses-ref.'
         required: true
         type: string
+      java-version:
+        description: 'JDK for agent work (Temurin, Gradle/Maven cache). "" (default) installs NOTHING. e.g. "21".'
+        required: false
+        default: ''
+        type: string
+      node-version:
+        description: 'Node.js for agent work (npm cache). "" (default) installs NOTHING. e.g. "20".'
+        required: false
+        default: ''
+        type: string
+      python-version:
+        description: 'Python for agent work. "" (default) installs NOTHING. e.g. "3.12".'
+        required: false
+        default: ''
+        type: string
       flutter-version:
         description: 'Flutter SDK for agent work (cached). "" (default) installs NOTHING — most consumers are not Flutter projects and bring their own toolchain via the setup/install scripts. A value installs Flutter+matching Dart via flutter-action with SDK caching (e.g. "stable", "3.38.0"); Flutter targets (fa) pass it explicitly.'
         required: false
@@ -403,6 +418,26 @@ jobs:
         with:
           flutter-version: ${{ inputs.flutter-version }}
           cache: true
+
+      - name: Set up Java for agent work
+        if: inputs.java-version != ''
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+          cache: gradle
+
+      - name: Set up Node.js for agent work
+        if: inputs.node-version != ''
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Set up Python for agent work
+        if: inputs.python-version != ''
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python-version }}
 
       - name: Verify prerequisites
         env:
