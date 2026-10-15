@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Bounded sleep stub: logs every call; the ${SLEEP_MAX_CALLS}-th call exits 1,
+# which deterministically terminates `while sleep N; do ...` loops (the loop
+# condition sees a non-zero status) — infinite `while :` loops instead die on
+# `bash -e` at the same call on both sides of the A/B, still byte-identical.
+printf 'sleep %s\n' "$*" >> "${SLEEP_LOG:-/dev/null}"
+n=$(( $(cat "${SLEEP_COUNTER:-/dev/null}" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "${n}" > "${SLEEP_COUNTER:?SLEEP_COUNTER unset}"
+[ "${n}" -ge "${SLEEP_MAX_CALLS:-50}" ] && exit 1
+exit 0

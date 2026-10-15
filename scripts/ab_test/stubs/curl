@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# curl stub: records the call, serves ${CURL_FIXTURE_DIR}/<url-basename> to
+# the -o target. Exit 1 with a loud note when the fixture is missing.
+printf 'curl %s\n' "$*" >> "${CURL_LOG:-/dev/null}"
+url="" ; out="" ; prev=""
+for a in "$@"; do
+  case "$a" in http*) url="$a" ;; esac
+  [ "${prev}" = "-o" ] && out="$a"
+  prev="$a"
+done
+[ -n "${out}" ] || { echo "curl-stub: no -o target" >&2; exit 9; }
+src="${CURL_FIXTURE_DIR:?CURL_FIXTURE_DIR unset}/$(basename "${url}")"
+if [ ! -f "${src}" ]; then
+  echo "curl-stub: no fixture ${src}" >&2
+  exit 1
+fi
+cp "${src}" "${out}"
+exit 0

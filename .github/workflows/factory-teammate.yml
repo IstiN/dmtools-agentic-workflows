@@ -48,6 +48,16 @@ name: 'Factory · AI Teammate'
 on:
   workflow_call:
     inputs:
+      # The ref THIS awf repo was invoked at — a reusable workflow runs in
+      # the CALLER's context, so github.workflow_ref carries the caller's ref
+      # (dart's branch), which is meaningless against the awf remote. The
+      # stub passes its own pin here (main in production) — same pattern as
+      # factory_ref: the factory cannot see its own uses: ref.
+      factory_home_ref:
+        description: Awf ref the caller pinned factory-teammate.yml to
+        type: string
+        required: false
+        default: main
       runner:
         description: 'Runner label (self-hosted pools must be visible to the CALLING org)'
         type: string
@@ -147,6 +157,26 @@ jobs:
           # history walks. fetch-depth 0 cloned the FULL history here
           # (~1 min on fa, every leg) for nothing.
           fetch-depth: 1
+      - name: Fetch factory scripts (this repo @ invocation ref)
+        # Stage-2 de-bloat delivery: the guard's domain step (scripts/
+        # teammate-dispatch-gate.sh) rides the same immutable factory-kit
+        # fetch as the teammate job — scripts/ is checked out at EXACTLY the
+        # ref the caller invoked (github.workflow_ref), so the gate logic can
+        # never skew from the workflow version that calls it. Strict, unlike
+        # the teammate fetch: the guard has no FACTORY_ROOT fallback, so a
+        # failed delivery must red the run, not silently skip the gate.
+        env:
+          AWF_REF: ${{ inputs.factory_home_ref }}
+        run: |
+          ref="$AWF_REF"
+          dir="${RUNNER_TEMP}/factory-kit"
+          git init -q "$dir"
+          git -C "$dir" remote add origin https://github.com/IstiN/dmtools-agentic-workflows.git
+          git -C "$dir" fetch -q --depth 1 origin "$ref" \
+            || { echo "::error::factory scripts fetch failed at $ref — the dispatch gate cannot run"; exit 1; }
+          git -C "$dir" checkout -q FETCH_HEAD -- scripts/
+          [ -f "$dir/scripts/teammate-dispatch-gate.sh" ] \
+            || { echo "::error::scripts/teammate-dispatch-gate.sh missing at $ref"; exit 1; }
       - name: Decide whether this event is for the agent
         id: check
         env:
@@ -172,244 +202,9 @@ jobs:
           # assignment-triggered dev legs never start (live: dmtools-dart
           # run 35519287617 — issue #173 assigned to ai-teammate → skipped).
           AGENT_HANDLE: ai-teammate
-        run: |
-          # Anchor validation (#687): exactly one of issue|pr.
-          if [ -n "$NUMBER" ] && [ -n "$PR_NUMBER" ]; then
-            echo "::error::both issue ($NUMBER) and pr ($PR_NUMBER) given — exactly one anchor allowed"
-            exit 1
-          fi
-          if [ -z "$NUMBER" ] && [ -z "$PR_NUMBER" ]; then
-            echo "::error::no anchor — pass either issue or pr"
-            exit 1
-          fi
-
-          # ── runners come from the TARGET repo (.dmtools/config.js) ──
-          # The factory ships no repo-specific runners: sm.runners maps
-          # legs to configs in this repository (see the integration guide,
-          # "Overriding agents per repository"). dev covers bug and story.
-          if [ ! -f .dmtools/config.js ]; then
-            echo "::error::.dmtools/config.js not found — the factory needs sm.runners to know this repo's agents (docs/machine-factory-integration.md §5a)"
-            exit 1
-          fi
-          ovr="$(node -e "try{const c=require('./.dmtools/config.js');const r=(c.sm&&c.sm.runners)||{};console.log([r.bug||r.dev||'',r.story||r.dev||'',r.review||'',r.rework||''].join('\t'))}catch(e){}" 2>/dev/null || true)"
-          if [ -z "$ovr" ]; then
-            echo "::error::sm.runners missing in .dmtools/config.js (bug/story[/dev], review, rework → runner config paths)"
-            exit 1
-          fi
-          RUNNER_BUG="$(echo "$ovr" | cut -f1)"
-          RUNNER_STORY="$(echo "$ovr" | cut -f2)"
-          RUNNER_REVIEW="$(echo "$ovr" | cut -f3)"
-          RUNNER_REWORK="$(echo "$ovr" | cut -f4)"
-          echo "→ runners (from .dmtools/config.js): bug=${RUNNER_BUG:--} story=${RUNNER_STORY:--} review=${RUNNER_REVIEW:--} rework=${RUNNER_REWORK:--}"
-
-          # Owner override gate (#544 owner rule, issue comment 3): a MANUAL
-          # agent:rework label IS the explicit override — it fires rework on
-          # ANY PR (machine or guest, with or without a local issue). But the
-          # machine NEVER self-triggers rework on guest PRs, and a random
-          # external labeler must not burn factory tokens. Where the
-          # `labeled` event sender is known, gate the override on its repo
-          # permission (write/admin/maintain). Schedule-scan dispatches and
-          # non-labeled events carry no meaningful actor — the label is
-          # trusted as-is (the SM consumed/verified it upstream).
-          rework_override_ok() {
-            if [ "$ACTOR" != "labeled" ] || [ -z "$SENDER" ]; then
-              return 0
-            fi
-            perm="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$SENDER/permission" -q .permission 2>/dev/null || true)"
-            case "$perm" in
-              admin|maintain|write) return 0 ;;
-              *)
-                echo "::warning::agent:rework by '$SENDER' (permission: ${perm:-none}) — the owner override requires write/admin; skipping (never fails the cycle, #544)"
-                return 1
-                ;;
-            esac
-          }
-
-          # ── PR-anchored dispatch (#687): the PR is the anchor. Review was
-          # the only leg defined for it — #544 extends the branch to REWORK:
-          # a labeled PR with no resolvable LOCAL issue anchors on the PR
-          # itself (pr-<N>, owner rule 3) and the rework runner derives its
-          # context from the PR (review findings, failing checks).
-          if [ -n "$PR_NUMBER" ]; then
-            state="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state -q .state 2>/dev/null || true)"
-            if [ -z "$state" ]; then
-              # #544 rule 2: an unresolvable anchor is a warn-and-skip —
-              # never exit 1. One bad number must not stall the machine loop.
-              echo "::warning::PR #$PR_NUMBER could not be resolved in $GITHUB_REPOSITORY — skipping (clean no-op, #544)"
-              echo "run=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            if [ "$state" != "OPEN" ]; then
-              echo "run=false" >> "$GITHUB_OUTPUT"
-              echo "→ PR #$PR_NUMBER is ${state} — not for the agent"
-              exit 0
-            fi
-            # 'blocked' = human hold (fa #939): the freeze switch applies to
-            # PR-anchored legs too — a frozen PR gets no review/rework run.
-            pr_blocked="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --json labels -q '([.labels[].name] | index("blocked")) != null' 2>/dev/null || echo false)"
-            if [ "$pr_blocked" = "true" ]; then
-              echo "run=false" >> "$GITHUB_OUTPUT"
-              echo "→ PR #$PR_NUMBER carries blocked — human hold, the machine skips it entirely"
-              exit 0
-            fi
-            leg="$INPUT_LEG"
-            if [ -z "$leg" ] && echo "$INPUT_REASON" | grep -qi 'rework'; then
-              leg="rework"
-            fi
-            if [ "$leg" = "rework" ]; then
-              if ! rework_override_ok; then
-                echo "run=false" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              echo "run=true" >> "$GITHUB_OUTPUT"
-              echo "runner=$RUNNER_REWORK" >> "$GITHUB_OUTPUT"
-              echo "config=factory-agents/pr_rework.json" >> "$GITHUB_OUTPUT"
-              echo "kind=rework" >> "$GITHUB_OUTPUT"
-              echo "anchor=pr-${PR_NUMBER}" >> "$GITHUB_OUTPUT"
-              echo "→ PR-anchored REWORK of #$PR_NUMBER (reason=${INPUT_REASON:-<none>}, #544)"
-              exit 0
-            fi
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "runner=$RUNNER_REVIEW" >> "$GITHUB_OUTPUT"
-            echo "config=factory-agents/pr_review.json" >> "$GITHUB_OUTPUT"
-            echo "kind=review" >> "$GITHUB_OUTPUT"
-            echo "anchor=pr-${PR_NUMBER}" >> "$GITHUB_OUTPUT"
-            echo "→ PR-anchored review of #$PR_NUMBER (reason=${INPUT_REASON:-<none>})"
-            exit 0
-          fi
-          echo "anchor=gh-${NUMBER}" >> "$GITHUB_OUTPUT"
-
-          # ALWAYS refresh labels/assignees from the API — not just for
-          # explicit dispatches. Event-triggered runs (issues:assigned,
-          # labeled, ...) sit QUEUED behind the per-issue concurrency group,
-          # and the github.event.issue payload they carry is a snapshot from
-          # trigger time: a guard that trusts it misses labels the
-          # already-running leg has since applied (status:In Development,
-          # status:In Rework) and dispatches a duplicate dev/rework leg on
-          # top of the live one (live: dmtools-dart run 36252718919 for #257;
-          # a duplicate rework dispatch for #259). The event payload is only
-          # a fallback when the API read itself fails.
-          if fresh_labels="$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels -q '[.labels[].name] | join(" ")')" \
-            && fresh_assignees="$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json assignees -q '[.assignees[].login] | join(" ")')"; then
-            LABELS="$fresh_labels"
-            ASSIGNEES="$fresh_assignees"
-          else
-            echo "::warning::labels/assignees refresh failed for #$NUMBER — falling back to the (possibly stale) event payload"
-          fi
-          if [ -n "$INPUT_LEG" ]; then
-            echo "→ dispatch: leg=$INPUT_LEG reason=${INPUT_REASON:-<none>}"
-          fi
-          # Closed issues are terminal: no agent runs on them. #544 rule 2:
-          # a FAILED resolution (404 — missing issue or cross-repo ref like
-          # 'dm.ai #601') is a warn-and-skip, never exit 1 — one bad anchor
-          # must not turn the whole SM cycle red every 15 min.
-          state="$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json state -q .state 2>/dev/null || true)"
-          if [ -z "$state" ]; then
-            echo "::warning::issue #$NUMBER could not be resolved in $GITHUB_REPOSITORY (missing or cross-repo ref) — skipping this leg (clean no-op, #544)"
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "$state" != "OPEN" ]; then
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "→ issue #$NUMBER is ${state} — not for the agent"
-            exit 0
-          fi
-          # agent:skip — hard opt-out for smoke/verification tickets.
-          if echo "$LABELS" | grep -qw "agent:skip"; then
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "→ issue #$NUMBER carries agent:skip — agent bypassed"
-            exit 0
-          fi
-          # 'blocked' = human hold (fa #939): the official freeze switch —
-          # no leg starts on a frozen item, whatever the event (assignment,
-          # any label echo). Same label the SM engine and the machine-SM
-          # reconciler honor; removing it returns the item to the loop.
-          if echo "$LABELS" | grep -qw "blocked"; then
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "→ issue #$NUMBER carries blocked — human hold, the machine skips it entirely"
-            exit 0
-          fi
-          runner=""
-          slot=""
-          if [ -n "$INPUT_LEG" ]; then
-            case "$INPUT_LEG" in
-              rework) runner="$RUNNER_REWORK"; slot="rework" ;;
-              review) runner="$RUNNER_REVIEW"; slot="review" ;;
-              dev)
-                title="$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title -q .title)"
-                if echo "$title" | grep -qiE '^\[?bug\]' \
-                  || echo "$LABELS" | grep -qwi "bug"; then
-                  runner="$RUNNER_BUG"; slot="bug"
-                else
-                  runner="$RUNNER_STORY"; slot="story"
-                fi
-                ;;
-            esac
-          elif echo "$LABELS" | grep -qw "agent:rework" \
-            && ! echo "$LABELS" | grep -q 'status:In Rework'; then
-            # status:In Rework = a rework leg already runs/ran — its own
-            # status transition echoes back as a `labeled` event and would
-            # re-derive the same leg on top of itself.
-            # #544: manual agent:rework is the owner override — it fires
-            # rework even from a `labeled` event, but only when the labeler
-            # has write/admin (see rework_override_ok). Without permission
-            # the override is ignored (runner stays empty → clean skip).
-            if rework_override_ok; then
-              runner="$RUNNER_REWORK"
-            fi
-          elif echo "$LABELS" | grep -qw "agent:review"; then
-            # status:In Review is NOT an in-flight marker here — the DEV leg
-            # sets it as the "ready for review" invitation, so blocking on it
-            # kills the label-echo review trigger (live: dmtools-dart gh-182).
-            # Real duplicate protection is the per-issue concurrency group.
-            runner="$RUNNER_REVIEW"; slot="review"
-          elif echo "$LABELS" | grep -qE 'status:In Development|status:In Review|status:In Rework|in progress|ai_developed|ai_pr_reviewed|_wip|rework-round-'; then
-            # Dev is a FRESH handoff only: once the loop has touched the
-            # issue, later `labeled` events (the dev leg's OWN status:In
-            # Development transition, SM backfill labels, ...) would
-            # re-derive dev and queue a duplicate leg on top of the
-            # running/finished one (live: fa gh-746 — the assigned-handoff
-            # dev ran while its status-label echo queued a second dev).
-            # The SM owns the loop from there; explicit dispatches
-            # (inputs.leg) bypass this derive branch entirely.
-            :
-          elif echo "$ASSIGNEES" | grep -qw "$AGENT_HANDLE" \
-            || echo "$LABELS" | grep -qw "agent:dev"; then
-            title="$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title -q .title)"
-            if echo "$title" | grep -qiE '^\[?bug\]' \
-              || echo "$LABELS" | grep -qwi "bug"; then
-              runner="$RUNNER_BUG"; slot="bug"
-            else
-              runner="$RUNNER_STORY"; slot="story"
-            fi
-          fi
-          if [ -n "$runner" ]; then
-            # Parent agent config — fa-session.sh derives the session group
-            # from its basename (dev-write vs dev-review).
-            # Parent pipeline by SLOT — custom runners (config overrides)
-            # inherit the leg's pipeline, so a repo can swap the agent
-            # without losing session/verdict semantics. The value below is
-            # the LEGACY tree path; the teammate job re-resolves it pack-first
-            # (Wave 2: an unpacked pack's launch.json WINS — see the
-            # "Resolve parent config" step; this fallback keeps old pins
-            # working when no Wave-2 pack is unpacked).
-            case "$slot" in
-              bug)     config="factory-agents/bug_development.json"; kind="dev" ;;
-              story)   config="factory-agents/story_development.json"; kind="dev" ;;
-              review)  config="factory-agents/pr_review.json";        kind="review" ;;
-              rework)  config="factory-agents/pr_rework.json";        kind="dev" ;;
-              *)       config="factory-agents/story_development.json"; kind="dev" ;;
-            esac
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "runner=$runner" >> "$GITHUB_OUTPUT"
-            echo "config=$config" >> "$GITHUB_OUTPUT"
-            echo "kind=$kind" >> "$GITHUB_OUTPUT"
-            echo "→ agent run: $runner (event=$ACTOR, labels=$LABELS, assignees=$ASSIGNEES)"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "→ not for the agent (event=$ACTOR, labels=$LABELS, assignees=$ASSIGNEES)"
-          fi
+        # Body: scripts/teammate-dispatch-gate.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/teammate-dispatch-gate.sh"
 
   teammate:
     needs: guard
@@ -452,6 +247,41 @@ jobs:
           # factory can never skew apart. Keep both in sync when flipping refs.
           echo "FACTORY_REF=${{ inputs.factory_ref }}" >> "$GITHUB_ENV"
 
+      - name: "Fetch factory kit (this repo @ invocation ref — immutable)"
+        # Trust-boundary scripts (git push guard, source PAT credentials)
+        # ride the SAME immutable ref the caller invoked this workflow at
+        # (github.workflow_ref = owner/repo/.github/workflows/<name>.yml@<ref>)
+        # — a PR head can no longer supply them (self-host security,
+        # 2026-10-01) and the script version can never skew from the workflow
+        # version that calls it. Plain git (no action): GitLab-portable.
+        #
+        # RUNNER_TEMP, never $GITHUB_WORKSPACE: a nested git repo inside the
+        # workspace poisons every downstream `git add` (the gitlink "does
+        # not have a commit checked out", exit 128 — live fa gh-1000
+        # 2026-10-03: PR staging, origin-sync clean-tree gate, and the
+        # session timer auto-commit all tripped on it).
+        env:
+          AWF_REF: ${{ inputs.factory_home_ref }}
+        run: |
+          ref="$AWF_REF"
+          dir="${RUNNER_TEMP}/factory-kit"
+          git init -q "$dir"
+          git -C "$dir" remote add origin https://github.com/IstiN/dmtools-agentic-workflows.git
+          git -C "$dir" fetch -q --depth 1 origin "$ref" \
+            || { echo "::warning::kit fetch failed — falling back to FACTORY_ROOT copies"; exit 0; }
+          git -C "$dir" checkout -q FETCH_HEAD -- kit/
+          git -C "$dir" checkout -q FETCH_HEAD -- scripts/ 2>/dev/null || true  # stage-1 de-bloat: step bodies live in scripts/ (same immutable ref)
+          [ -f "$dir/kit/git-push-guard.sh" ] || { echo "::warning::kit incomplete at $ref — falling back"; rm -rf "$dir"; exit 0; }
+          # Kit liveness probe (awf#7): a guard whose shebang is not line 1
+          # silently executes under /bin/sh and dies with "Syntax error" on
+          # every git call — the whole dev session loses git (branch setup,
+          # timer auto-commit, PR post-action) with quiet skips downstream.
+          head -1 "$dir/kit/git-push-guard.sh" | grep -q '^#!.*bash' \
+            || { echo "::error::kit git-push-guard.sh lost its shebang (line 1) at $ref — refusing to arm a broken guard"; exit 1; }
+          cp "$dir/kit/git-push-guard.sh" "$RUNNER_TEMP/git-probe" && chmod +x "$RUNNER_TEMP/git-probe"
+          "$RUNNER_TEMP/git-probe" version >/dev/null 2>&1 \
+            || { echo "::error::kit git-push-guard.sh does not execute (probe failed) at $ref"; exit 1; }
+
       - name: "Fetch factory-setup (dmtools-agents releases — no tree checkout)"
         # Owner mandate 2026-10-03: the factory NEVER clones the
         # dmtools-agents tree. The workflow glue the run needs —
@@ -472,92 +302,9 @@ jobs:
           # agents-rel-* tag it takes PRECEDENCE over the registry
           # variable for the setup pack AND the runtime pack registry.
           AGENTS_KNOB: ${{ vars.AGENTS_VERSION || 'latest' }}
-        run: |
-          set -eu
-          # Compat branch: mounted tree wins, untouched.
-          if [ -d "${GITHUB_WORKSPACE}/factory-agents" ]; then
-            echo "→ compat: factory-agents/ tree is mounted — it wins (FACTORY_ROOT=tree)"
-            echo "FACTORY_ROOT=${GITHUB_WORKSPACE}/factory-agents" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          # awf#25 pin parity: a pinned fleet must never float to newest
-          # pack content through a floating registry base. AGENTS_KNOB
-          # (concrete tag) wins; 'latest'/unset keeps the historical
-          # PACK_TAG resolution below.
-          if [ -n "${AGENTS_KNOB}" ] && [ "${AGENTS_KNOB}" != "latest" ]; then
-            tag="${AGENTS_KNOB}"
-          else
-            tag="${PACK_TAG}"
-          fi
-          # DMTOOLS_PACK_REGISTRY is the dm.ai #579 RESOLVER format — a
-          # releases BASE URL (…/releases/latest/download) or a tag URL;
-          # only a bare tag can feed `gh release download` directly.
-          case "${tag}" in
-            http*)
-              # …/releases/tag/<tag> pins exactly; anything else (/latest/,
-              # /download/) resolves to the newest agents-rel-* tag.
-              pinned="$(printf '%s' "${tag}" | sed -n 's#.*/releases/tag/\([A-Za-z0-9._-]\+\).*#\1#p')"
-              if [ -n "${pinned}" ] && printf '%s' "${pinned}" | grep -q '^agents-rel-'; then
-                tag="${pinned}"
-              else
-                tag=""
-              fi
-              ;;
-          esac
-          if [ -z "${tag}" ]; then
-            tag="$(gh release list --repo IstiN/dmtools-agents --limit 10 --json tagName \
-              --jq '[.[].tagName | select(startswith("agents-rel-"))] | .[0]')"
-            [ -n "${tag}" ] || { echo "::error::no agents-rel-* release found in IstiN/dmtools-agents"; exit 1; }
-            echo "::notice::factory-setup from newest release ${tag}"
-          fi
-          dir="${RUNNER_TEMP}/factory-setup"
-          mkdir -p "${dir}"
-          tmp="$(mktemp -d)"
-          gh release download "${tag}" --repo IstiN/dmtools-agents \
-            --pattern 'factory-setup-*.zip' --dir "${tmp}" --clobber
-          unzip -q "${tmp}"/factory-setup-*.zip -d "${dir}"
-          [ -f "${dir}/setup/cache.sh" ] || { echo "::error::factory-setup incomplete at ${tag} (no setup/cache.sh)"; exit 1; }
-          [ -f "${dir}/configs/pr_review.json" ] || { echo "::error::factory-setup incomplete at ${tag} (no configs/)"; exit 1; }
-          echo "→ factory-setup from ${tag} (FACTORY_ROOT=${dir})"
-          echo "FACTORY_ROOT=${dir}" >> "$GITHUB_ENV"
-          # awf#25: the resolved tag feeds the runtime pack registry (see
-          # the agent-run step) — setup content and pack content pin
-          # together from this point on.
-          echo "RESOLVED_AGENTS_TAG=${tag}" >> "$GITHUB_ENV"
-
-      - name: "Fetch factory kit (this repo @ invocation ref — immutable)"
-        # Trust-boundary scripts (git push guard, source PAT credentials)
-        # ride the SAME immutable ref the caller invoked this workflow at
-        # (github.workflow_ref = owner/repo/.github/workflows/<name>.yml@<ref>)
-        # — a PR head can no longer supply them (self-host security,
-        # 2026-10-01) and the script version can never skew from the workflow
-        # version that calls it. Plain git (no action): GitLab-portable.
-        #
-        # RUNNER_TEMP, never $GITHUB_WORKSPACE: a nested git repo inside the
-        # workspace poisons every downstream `git add` (the gitlink "does
-        # not have a commit checked out", exit 128 — live fa gh-1000
-        # 2026-10-03: PR staging, origin-sync clean-tree gate, and the
-        # session timer auto-commit all tripped on it).
-        env:
-          AWF_REF: ${{ github.workflow_ref }}
-        run: |
-          ref="${AWF_REF##*@}"
-          dir="${RUNNER_TEMP}/factory-kit"
-          git init -q "$dir"
-          git -C "$dir" remote add origin https://github.com/IstiN/dmtools-agentic-workflows.git
-          git -C "$dir" fetch -q --depth 1 origin "$ref" \
-            || { echo "::warning::kit fetch failed — falling back to FACTORY_ROOT copies"; exit 0; }
-          git -C "$dir" checkout -q FETCH_HEAD -- kit/
-          [ -f "$dir/kit/git-push-guard.sh" ] || { echo "::warning::kit incomplete at $ref — falling back"; rm -rf "$dir"; exit 0; }
-          # Kit liveness probe (awf#7): a guard whose shebang is not line 1
-          # silently executes under /bin/sh and dies with "Syntax error" on
-          # every git call — the whole dev session loses git (branch setup,
-          # timer auto-commit, PR post-action) with quiet skips downstream.
-          head -1 "$dir/kit/git-push-guard.sh" | grep -q '^#!.*bash' \
-            || { echo "::error::kit git-push-guard.sh lost its shebang (line 1) at $ref — refusing to arm a broken guard"; exit 1; }
-          cp "$dir/kit/git-push-guard.sh" "$RUNNER_TEMP/git-probe" && chmod +x "$RUNNER_TEMP/git-probe"
-          "$RUNNER_TEMP/git-probe" version >/dev/null 2>&1 \
-            || { echo "::error::kit git-push-guard.sh does not execute (probe failed) at $ref"; exit 1; }
+        # Body: scripts/fetch-factory-setup.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/fetch-factory-setup.sh"
 
       - name: "Resolve parent config (pack launch.json wins, tree fallback)"
         # Wave 2 (owner 2026-10-01): teammate packs are self-sufficient —
@@ -574,29 +321,9 @@ jobs:
         # way. Plain bash: GitLab-portable.
         env:
           LEGACY_CONFIG: ${{ needs.guard.outputs.config }}
-        run: |
-          set -eu
-          agent="$(basename "${LEGACY_CONFIG}" .json)"
-          pack_launch="$(ls -1 "${HOME}"/.dmtools/packs/"${agent}"-*/launch.json 2>/dev/null | sort -V | tail -1 || true)"
-          if [ -n "${pack_launch}" ]; then
-            echo "→ pack launch.json wins: ${pack_launch}"
-            echo "AI_TEAMMATE_CONFIG_FILE=${pack_launch}" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          # No unpacked pack — the legacy fallback now lives under
-          # FACTORY_ROOT: a mounted tree keeps its root-level <agent>.json
-          # layout; the factory-setup zip ships configs/<agent>.json.
-          for legacy_path in \
-            "${FACTORY_ROOT}/${agent}.json" \
-            "${FACTORY_ROOT}/configs/${agent}.json"; do
-            if [ -f "${legacy_path}" ]; then
-              echo "→ no unpacked ${agent} pack launch.json — legacy config: ${legacy_path}"
-              echo "AI_TEAMMATE_CONFIG_FILE=${legacy_path}" >> "$GITHUB_ENV"
-              exit 0
-            fi
-          done
-          echo "::error::no parent config for '${agent}': neither ~/.dmtools/packs/${agent}-*/launch.json nor ${FACTORY_ROOT}/${agent}.json nor ${FACTORY_ROOT}/configs/${agent}.json exists — no Wave-2 pack unpacked and the factory-setup legacy configs are missing"
-          exit 1
+        # Body: scripts/resolve-parent-config.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/resolve-parent-config.sh"
 
       - name: Export fa session identity + cache keys
         # AI_TEAMMATE_CONFIG_FILE comes from the resolve step above
@@ -612,16 +339,9 @@ jobs:
         # branch per issue; the per-issue concurrency group serializes writers.
         env:
           FA_SESS_BRANCH: fa-sess/${{ needs.guard.outputs.anchor }}
-        run: |
-          if git fetch --depth 1 origin "refs/heads/$FA_SESS_BRANCH"; then
-            git checkout "refs/remotes/origin/$FA_SESS_BRANCH" -- .dmtools/fa-sessions
-            # Unstage (checkout <ref> -- <path> STAGES): the session store
-            # belongs on the fa-sess branch only.
-            git restore --staged .dmtools/fa-sessions
-            echo "→ fa session restored from $FA_SESS_BRANCH"
-          else
-            echo "→ no saved fa session yet ($FA_SESS_BRANCH absent) — starting fresh"
-          fi
+        # Body: scripts/restore-fa-session.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/restore-fa-session.sh"
 
       - name: Cache fa CLI (by version)
         if: env.FA_VERSION != 'latest'
@@ -638,12 +358,9 @@ jobs:
         # 2026-10-01: machine legs always track the latest CLI/agents.
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ "${DMTOOLS_VERSION:-}" = "latest" ]; then
-            TAG="$(gh release view --repo epam/dmtools-dart --json tagName --jq .tagName)"
-            echo "DMTOOLS_VERSION=${TAG}" >> "$GITHUB_ENV"
-            echo "::notice::dmtools CLI: latest resolved to ${TAG}"
-          fi
+        # Body: scripts/resolve-dmtools-version.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/resolve-dmtools-version.sh"
 
       - name: Cache dmtools CLI (by version)
         uses: actions/cache@v6
@@ -657,58 +374,16 @@ jobs:
         # after a re-cut release (observed 2026-09-12).
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if ! command -v fa >/dev/null 2>&1 && [ ! -x "${HOME}/.local/bin/fa" ]; then
-            case "$(uname -m)" in
-              x86_64) FA_ARCH="x64" ;;
-              *)      FA_ARCH="arm64" ;;
-            esac
-            tmp="$(mktemp -d)"
-            # 'latest' is a WORD, not a tag — gh release download takes a
-            # literal tag; with no tag it resolves the latest release.
-            # (Live failure on IstiN/flutter_agent_harness gh-623: the repo
-            # has no FA_VERSION var -> 'latest' -> "release not found".)
-            # A fresh latest release can also be asset-less for a while
-            # (v0.1.418 2026-09-18: tag landed, binaries never uploaded ->
-            # review leg died "no assets to download"). Walk back to the
-            # newest release that actually ships the CLI bundle.
-            if [ "${FA_VERSION}" = "latest" ] || [ -z "${FA_VERSION}" ]; then
-              for t in $(gh release list \
-                  --repo IstiN/flutter_agent_harness --limit 10 \
-                  --json tagName --jq '.[].tagName'); do
-                if gh release view "$t" --repo IstiN/flutter_agent_harness \
-                    --json assets --jq '.assets[].name' 2>/dev/null \
-                    | grep -q "^fa-linux-${FA_ARCH}\.tar\.gz$"; then
-                  FA_VERSION="$t"
-                  echo "fa install: latest asset-less, falling back to ${FA_VERSION}"
-                  break
-                fi
-              done
-            fi
-            gh release download "${FA_VERSION}" \
-              --repo IstiN/flutter_agent_harness \
-              --pattern "fa-linux-${FA_ARCH}.tar.gz" --dir "${tmp}" --clobber
-            tar -xzf "${tmp}/fa-linux-${FA_ARCH}.tar.gz" -C "${tmp}"
-            mkdir -p "${HOME}/.local/bin" "${HOME}/.local/lib"
-            cp "${tmp}/bundle/bin/fa" "${HOME}/.local/bin/fa"
-            chmod +x "${HOME}/.local/bin/fa"
-            # version.txt next to the binary — _packageVersion probes
-            # <exe_dir>/version.txt; without it the CLI reports the 0.1.0
-            # fallback and every session reinstalls (2026-10-01 loop).
-            [ -f "${tmp}/bundle/version.txt" ] \
-              && cp "${tmp}/bundle/version.txt" "${HOME}/.local/bin/version.txt"
-            cp -R "${tmp}/bundle/lib/." "${HOME}/.local/lib/" 2>/dev/null || true
-          fi
-          bash "${FACTORY_ROOT}/setup/install.sh" "fa:${FA_VERSION}"
+        # Body: scripts/install-fa-cli.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/install-fa-cli.sh"
 
       - name: Install dmtools CLI (pinned release bundle)
         # The installer ships as a release asset, version-locked to the
         # bundle it installs — no copy of install.sh in the target repo.
-        run: |
-          curl -fsSL "https://github.com/epam/dmtools-dart/releases/download/${DMTOOLS_VERSION}/install.sh" \
-            -o /tmp/dmtools-install.sh
-          bash /tmp/dmtools-install.sh "${DMTOOLS_VERSION}"
-          echo "$HOME/.dmtools/bin" >> "$GITHUB_PATH"
+        # Body: scripts/install-dmtools-cli.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/install-dmtools-cli.sh"
 
       # flutter-action treats a literal version string strictly — the words
       # stable/beta/main/master are CHANNELS and crash the action ("Unable
@@ -730,13 +405,11 @@ jobs:
           cache: true
 
       - name: Verify prerequisites
-        run: |
-          fa --version
-          dmtools --version
-          if [ -n "${{ inputs.flutter-version }}" ]; then
-            flutter --version
-            dart --version
-          fi
+        env:
+          FLUTTER_VERSION: ${{ inputs.flutter-version }}
+        # Body: scripts/verify-prerequisites.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/verify-prerequisites.sh"
 
       - name: Configure Git Author + push credentials
         # Purge the checkout's App token and make SOURCE_GITHUB_TOKEN the
@@ -764,96 +437,26 @@ jobs:
         #                        SOURCE_GITHUB_TOKEN served the credential
         env:
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
-        run: |
-          mkdir -p .dmtools
-          echo "── credential.helper — all scopes, with origins ──"
-          git config --show-origin --get-all credential.helper || true
-          git config --show-origin --get-all credential.https://github.com.helper || true
-          echo "── http.https://github.com/.extraheader (must be empty — App token purged) ──"
-          # Redact the VALUE (gh-63 review threads 11/12): on a leftover this
-          # dump prints AUTHORIZATION: basic <base64(App token)> — GitHub's
-          # log masking matches the raw token string, not its base64 form.
-          # git 2.x prints "<origin>\t<value>" (--show-origin --get-all has
-          # NO key= prefix), so redact everything after the first TAB — a
-          # sed on '=' alone would only trim the base64 padding. The origin
-          # (file/scope) stays visible; a tab-less line is fully redacted.
-          git config --show-origin --get-all http.https://github.com/.extraheader | sed -E 's/^([^\t]*\t).*/\1<redacted>/; t; s/.+/<redacted> (unexpected line without origin)/' || true
-          if git config --get-all http.https://github.com/.extraheader | grep -q .; then
-            echo "::error::App-token extraheader still present after purge — pushes would authenticate as github-actions[bot]"
-            exit 1
-          fi
-          echo "── submodule extraheaders (must be empty — App token purged there too) ──"
-          # checkout arms every submodule's local config with the same token;
-          # a push made from inside agents/ must not fall back to it (gh-63).
-          # The probe echoes a LEFTOVER marker line only when a config is
-          # still armed, so "no submodules" and "all clean" stay quiet.
-          # The marker names the submodule but NEVER the header value: it is
-          # AUTHORIZATION: basic <base64(App token)>, decodable and NOT masked
-          # by GitHub log redaction (gh-63 review threads 11/12).
-          sub_leftovers="$(git submodule foreach --quiet --recursive \
-            'c="$(git config --get-all http.https://github.com/.extraheader || true)"; [ -z "$c" ] || echo "LEFTOVER ${sm_path}: <redacted>"' \
-            || true)"
-          if [ -n "$sub_leftovers" ]; then
-            echo "::error::App-token extraheader still present in a submodule config after purge — pushes from inside the submodule would authenticate as github-actions[bot]"
-            printf '%s\n' "$sub_leftovers"
-            exit 1
-          fi
-          echo "── commit identity ──"
-          git var GIT_AUTHOR_IDENT
-          git var GIT_COMMITTER_IDENT
-          echo "── dry-run: credential a github.com push would use ──"
-          # Capture first, then assert: with GIT_ASKPASS=echo `git credential
-          # fill` exits 0 even when NO helper answered (echo prints its prompt
-          # back, git accepts it as a bogus credential) — only the
-          # SOURCE helper's username proves the SOURCE credential wins.
-          # CRED_HELPER_CONTEXT tags the helper's log line so this dry-run
-          # stays distinguishable from real pushes in the evidence log.
-          out="$(printf 'protocol=https\nhost=github.com\n' | CRED_HELPER_CONTEXT=trace-dry-run GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=echo git credential fill 2>&1)" || true
-          if printf '%s\n' "$out" | grep -q '^username=x-access-token$'; then
-            echo "$out" | sed -E 's/^password=.+/password=<redacted — served by the SOURCE_GITHUB_TOKEN helper>/'
-          else
-            echo "::error::dry-run credential was NOT served by the SOURCE_GITHUB_TOKEN helper — a github.com push would not authenticate as the SOURCE account"
-            printf '%s\n' "$out" | sed -E 's/^password=.+/password=<redacted>/'
-            exit 1
-          fi
+        # Body: scripts/trace-git-credentials.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/trace-git-credentials.sh"
 
       - name: Seed local git excludes (factory workspace artifacts)
         # Everything the factory/agent scribbles into the workspace that must
         # NEVER reach a commit (agents run `git add -A`). .git/info/exclude is
         # local-only by construction — no .gitignore pollution in agent PRs.
-        run: |
-          {
-            echo '# factory workspace artifacts (seeded per-run, never commit)'
-            echo '.codegraph/'
-            echo '.dmtools/fa-trace.log'
-            echo '.dmtools/run-output.txt'
-            echo '.dmtools/stall-capture.log'
-            echo '.dmtools/fa-sessions/'
-            echo '.dmtools/copilot-sessions/'
-            echo '.fah/bash_jobs/'
-            echo '# the factory clone itself: an in-index gitlink without'
-            echo '# .gitmodules breaks every actions/checkout with submodules'
-            echo 'factory-agents/'
-          } >> .git/info/exclude
+        # Body: scripts/seed-git-excludes.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/seed-git-excludes.sh"
 
       - name: Write the issue into the agent input folder
         if: inputs.pr == ''
         env:
           GH_TOKEN: ${{ github.token }}
           NUMBER: ${{ inputs.issue }}
-        run: |
-          # ticket.json carries the tracker-contract fields: dmtools hydrates
-          # it into params.ticket for every JS action (Tracker abstraction).
-          mkdir -p "input/gh-${NUMBER}"
-          gh issue view "$NUMBER" --repo "${{ github.repository }}" \
-            --json number,title,body,url,state,labels \
-            -q '{key: ("gh-" + (.number|tostring)), number: .number,
-                 title: .title, body: .body, url: .url, state: .state,
-                 labels: [.labels[].name]}' \
-            > "input/gh-${NUMBER}/ticket.json"
-          gh issue view "$NUMBER" --repo "${{ github.repository }}" \
-            --json title,body -q '.title, .body' > input/ticket.md
-          echo "input/ticket.md: $(wc -l < input/ticket.md) lines"
+        # Body: scripts/write-input-issue.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/write-input-issue.sh"
 
       - name: Write the PR into the agent input folder (PR-anchored runs)
         # #687: the PR is the anchor — the pr-N contextId is what the agent
@@ -863,17 +466,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr }}
-        run: |
-          mkdir -p "input/pr-${PR_NUMBER}"
-          gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" \
-            --json number,title,body,url,state,labels \
-            -q '{key: ("pr-" + (.number|tostring)), number: .number,
-                 title: .title, body: .body, url: .url, state: .state,
-                 labels: [.labels[].name]}' \
-            > "input/pr-${PR_NUMBER}/ticket.json"
-          gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" \
-            --json title,body -q '.title, .body' > input/ticket.md
-          echo "input/ticket.md: $(wc -l < input/ticket.md) lines"
+        # Body: scripts/write-input-pr.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/write-input-pr.sh"
 
       - name: Mark machine job started (issue task list)
         # Deterministic start marker in the issue body — survives agent
@@ -888,24 +483,9 @@ jobs:
           JOB_LEG: ${{ needs.guard.outputs.kind }}
           RUNNER: ${{ needs.guard.outputs.runner }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          repo="${{ github.repository }}"
-          leg="${JOB_LEG:-dev} ($(basename "${RUNNER:-agent}" .json))"
-          line="- [ ] ▶ ${leg} · [run](${RUN_URL}) · started $(date -u '+%H:%M') ⏳"
-          gh issue view "$NUMBER" --repo "$repo" --json body -q .body > /tmp/issue_body.md
-          # Collapse trailing blank lines first: body rewrites (jq raw
-          # output, earlier appends, agent edits) can leave trailing
-          # newlines, and a marker appended after them splits the GitHub
-          # task list into separate lists (broken formatting). "$(cat …)"
-          # strips ALL trailing newlines; printf adds exactly one back.
-          printf '%s\n' "$(cat /tmp/issue_body.md)" > /tmp/issue_body.md
-          if grep -q '^## Machine jobs' /tmp/issue_body.md; then
-            printf '%s\n' "$line" >> /tmp/issue_body.md
-          else
-            printf '\n## Machine jobs\n%s\n' "$line" >> /tmp/issue_body.md
-          fi
-          gh issue edit "$NUMBER" --repo "$repo" --body-file /tmp/issue_body.md
-          echo "job marker added: $line"
+        # Body: scripts/mark-job-started.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/mark-job-started.sh"
 
       - name: Export custom provider key slots (1-3) → job env
         # Generic numbered slots (owner decision 2026-10-13): the factory
@@ -921,25 +501,9 @@ jobs:
           CUSTOM_PROVIDER_KEY2_NAME: ${{ inputs.CUSTOM_PROVIDER_KEY2_NAME }}
           CUSTOM_PROVIDER_KEY3: ${{ secrets.CUSTOM_PROVIDER_KEY3 }}
           CUSTOM_PROVIDER_KEY3_NAME: ${{ inputs.CUSTOM_PROVIDER_KEY3_NAME }}
-        run: |
-          i=1
-          while [ "$i" -le 3 ]; do
-            val_var="CUSTOM_PROVIDER_KEY${i}"
-            name_var="CUSTOM_PROVIDER_KEY${i}_NAME"
-            val="${!val_var:-}"
-            name="${!name_var:-}"
-            if [ -n "$val" ] && [ -n "$name" ]; then
-              case "$name" in *[!A-Z0-9_]*|"")
-                echo "::error::CUSTOM_PROVIDER_KEY${i}_NAME '${name}' is not a valid env name (A-Z0-9_)"
-                exit 1 ;;
-              esac
-              printf '%s=%s\n' "$name" "$val" >> "$GITHUB_ENV"
-              echo "→ slot ${i} exported as ${name} (value runner-masked)"
-            elif [ -n "$val" ] || [ -n "$name" ]; then
-              echo "::warning::CUSTOM_PROVIDER_KEY${i}: value without NAME (or NAME without value) — slot skipped"
-            fi
-            i=$((i + 1))
-          done
+        # Body: scripts/export-provider-key-slots.sh (stage-1 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/export-provider-key-slots.sh"
 
       - name: Run agent (fa provider via runner env overrides)
         id: run_agent
@@ -1009,27 +573,9 @@ jobs:
           mkdir -p "$(dirname "${FA_LOG_FILE}")"
           touch "${FA_LOG_FILE}"
           echo "fa full trace: ${FA_LOG_FILE}"
-          # ── dmtools self-heal (self-hosted runners keep a persistent $HOME) ──
-          # A stale or half-updated ~/.dmtools/bin from an older install
-          # layout kills the leg instantly with "Error: Cannot open file"
-          # (live: epam/dmtools-dart pr-301 review, run 36614989141 — the
-          # install step's own `dmtools --version` printed 0.1.22, and the
-          # run step 14s later died before any output). Probe what PATH
-          # actually resolves at RUN time, verify it, and force-reinstall
-          # the pinned bundle when the resolution is broken.
-          echo "── dmtools self-check ──"
-          echo "resolved: $(command -v dmtools || echo MISSING)"
-          ls -la "${HOME}/.dmtools/bin" 2>/dev/null | head -8 || true
-          if ! dmtools --version >/dev/null 2>&1; then
-            echo "dmtools on PATH is broken — force reinstall (${DMTOOLS_VERSION})"
-            curl -fsSL "https://github.com/epam/dmtools-dart/releases/download/${DMTOOLS_VERSION}/install.sh" \
-              -o /tmp/dmtools-heal.sh
-            bash /tmp/dmtools-heal.sh "${DMTOOLS_VERSION}"
-            export PATH="${HOME}/.dmtools/bin:${PATH}"
-            hash -r
-          fi
-          echo "resolved after heal: $(command -v dmtools || echo MISSING)"
-          dmtools --version
+          # Body: scripts/dmtools-selfheal.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+          # SOURCED so the healed PATH propagates to the rest of the step).
+          . "${RUNNER_TEMP}/factory-kit/scripts/dmtools-selfheal.sh"
           RUN_OUTPUT="${GITHUB_WORKSPACE}/.dmtools/run-output.txt"
           # #687: machine login rides jobParams so PR-anchored verdicts arm
           # the merge pipeline regardless of what the checked-out branch's
@@ -1040,72 +586,13 @@ jobs:
           if [ -n "$MA" ]; then
             DMTOOLS_ARGS+=('{"params":{"jobParams":{"machineAuthor":"'"$MA"'"}}}')
           fi
-          # fa-trace staleness watchdog: the fa session streams EVERY turn
-          # and tool call into FA_LOG_FILE, so a healthy leg touches it
-          # constantly. If the file goes quiet mid-run the session is
-          # brain-dead (live: dmd PR-266 legs — process alive, dmtools
-          # timer ticking, fa trace silent from the first minute, step
-          # in_progress forever). Without this the leg ZOMBIES: nothing
-          # fails, no verdict is produced, the SM never re-queues. On
-          # staleness: marker into run-output (post-actions + artifacts
-          # carry it, so the failure is diagnosable, not silent), then
-          # kill dmtools — its non-zero exit fails the step and the
-          # standard red path takes over. FA_TRACE_STALE_MINUTES defaults
-          # to 10 (healthy legs write every few seconds; ten quiet minutes
-          # is unambiguous). Tunable per repo via a workflow env if a
-          # provider ever proves slower.
-          (
-            stale_limit="${FA_TRACE_STALE_MINUTES:-10}"
-            while sleep 60; do
-              [ -f "${FA_LOG_FILE}" ] || continue
-              mtime="$(stat -c %Y "${FA_LOG_FILE}" 2>/dev/null || stat -f %m "${FA_LOG_FILE}" 2>/dev/null || echo 0)"
-              [ "${mtime}" != "0" ] || continue
-              age_min=$(( ( $(date +%s) - mtime ) / 60 ))
-              if [ "${age_min}" -ge "${stale_limit}" ]; then
-                {
-                  echo ""
-                  echo "🛑 FA-TRACE-STALE-WATCHDOG: no agent output for ${age_min} min" \
-                       "(limit ${stale_limit}) at $(date -u +%FT%TZ) — the agent session is presumed hung."
-                  echo "FA-TRACE-STALE-WATCHDOG=1 (diagnose via the fa-trace artifact; the leg fails and the SM red path re-queues)"
-                } | tee -a "${RUN_OUTPUT}"
-                echo "::error::fa-trace stale for ${age_min} min (limit ${stale_limit}) — agent session presumed hung; failing the leg"
-                # Best-effort kill: dmtools first (its death non-zeros the
-                # step), then the orphaned fa provider child.
-                pkill -f "dmtools run" 2>/dev/null || true
-                pkill -f "fa --session" 2>/dev/null || true
-                exit 0
-              fi
-            done
-          ) &
+          # Body: scripts/fa-trace-watchdog.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+          # backgrounded like the inline `( ... ) &` subshell it replaces).
+          RUN_OUTPUT="${RUN_OUTPUT}" bash -e "${RUNNER_TEMP}/factory-kit/scripts/fa-trace-watchdog.sh" &
           WATCHDOG_PID=$!
-          # Stall-capture sidecar (dmd PR-266 hang investigation 2026-09-28):
-          # the Bitrise-pool probe never catches the workload stall because
-          # it runs on an IDLE VM; this monitor rides the agent run itself.
-          # Every 20s: load, PSI io/mem, all D-state processes, and for every
-          # live git/sh/dart process the kernel wait channel (/proc wchan)
-          # plus stack and open fds — wchan names WHAT the process sleeps on
-          # (disk I/O, network, futex, pipe) which is the proof either way.
-          STALL_LOG="${GITHUB_WORKSPACE}/.dmtools/stall-capture.log"
-          : > "${STALL_LOG}"
-          (
-            while sleep 20; do
-              {
-                echo "=== $(date -u +%H:%M:%S) load=$(cut -d' ' -f1 /proc/loadavg)"
-                sed 's/^/psi_io  /' /proc/pressure/io 2>/dev/null
-                sed 's/^/psi_mem /' /proc/pressure/memory 2>/dev/null
-                ps -eo pid,ppid,state,etime,wchan:32,comm | awk 'NR==1 || $3 ~ /^D/'
-                # fa/dmtools comm names do not always match pgrep -x patterns
-                # (AOT binary renames, wrapper shells) — match the cmdline.
-                for p in $(pgrep -x git 2>/dev/null) $(pgrep -f "bin/fa" 2>/dev/null) $(pgrep -f "dmtools run" 2>/dev/null); do
-                  echo "--- pid $p ($(cat /proc/$p/comm 2>/dev/null)) state=$(awk '{print $3}' /proc/$p/stat 2>/dev/null) wchan=$(cat /proc/$p/wchan 2>/dev/null)"
-                  echo "    syscall: $(cat /proc/$p/syscall 2>/dev/null)"
-                  echo "    cmdline: $(tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null | cut -c1-200)"
-                  ls -l /proc/$p/fd 2>/dev/null | awk '{print "    fd:", $9, $10, $11}' | head -12
-                  cat /proc/$p/stack 2>/dev/null | sed 's/^/    stack: /'
-                done
-              } >> "${STALL_LOG}" 2>&1
-            done
-          ) &
+          # Body: scripts/stall-capture.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+          # backgrounded like the inline `( ... ) &` subshell it replaces).
+          bash -e "${RUNNER_TEMP}/factory-kit/scripts/stall-capture.sh" &
           STALL_MON_PID=$!
           trap 'kill "${WATCHDOG_PID}" "${STALL_MON_PID}" 2>/dev/null || true' EXIT
           dmtools run "${RUNNER}" ${DMTOOLS_ARGS[@]+"${DMTOOLS_ARGS[@]}"} \
@@ -1135,102 +622,9 @@ jobs:
           RUN_OUTPUT: ${{ github.workspace }}/.dmtools/run-output.txt
           DATA_BRANCH: factory-data
           DATA_PATH: data/fa-tokens.json
-        run: |
-          set -eu
-          if [ ! -s "${RUN_OUTPUT}" ]; then
-            echo "::warning::no run output captured — skipping token publish"
-            exit 0
-          fi
-          # Sum every fa-tokens ledger line (resume-aware: one line per
-          # session segment). Balanced-brace JSON after the marker.
-          read -r SUM_IN SUM_OUT SUM_CR MODEL < <(python3 - "${RUN_OUTPUT}" <<'PY' || true
-          import json, re, sys
-          inp = out = cr = 0
-          model = ""
-          try:
-              text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-          except OSError:
-              print(0, 0, 0, ""); raise SystemExit
-          for m in re.finditer(r"fa-tokens:[ \t]*(\{)", text):
-              depth, i = 0, m.start(1)
-              for i in range(m.start(1), len(text)):
-                  if text[i] == "{": depth += 1
-                  elif text[i] == "}":
-                      depth -= 1
-                      if depth == 0: break
-              try:
-                  rec = json.loads(text[m.start(1):i + 1])
-                  inp += int(rec.get("input") or 0)
-                  out += int(rec.get("output") or 0)
-                  # fa-tokens carries cacheRead per segment (gh-1241); the
-                  # board prices it (model-pricing cacheRead rates) and
-                  # renders an `input cached` column — sum it like in/out.
-                  cr += int(rec.get("cacheRead") or 0)
-                  # last-seen model wins (fa ledger carries it once gh-1241
-                  # grows the field; absent today — stay empty, consumers
-                  # render tokens-only)
-                  if rec.get("model"):
-                      model = str(rec["model"])
-              except Exception:
-                  continue
-          print(inp, out, cr, model)
-          PY
-          ) || true
-          SUM_IN="${SUM_IN:-0}"
-          SUM_OUT="${SUM_OUT:-0}"
-          SUM_CR="${SUM_CR:-0}"
-          MODEL="${MODEL:-}"
-          if [ "${SUM_IN}" = "0" ] && [ "${SUM_OUT}" = "0" ]; then
-            echo "::warning::no fa-tokens ledger line in run output — skipping token publish"
-            exit 0
-          fi
-          # The guard collapses the rework slot into kind="dev" (rework legs run the
-          # dev pipeline); recover the true leg from the runner config basename.
-          case "$(basename "${CONFIG:-}" .json)" in
-            *rework*) LEG="rework" ;;
-            *) LEG="${KIND:-dev}" ;;
-          esac
-          case "${ANCHOR}" in
-            pr-*) KEY="${ANCHOR}" ;;
-            gh-*) KEY="issue-${ANCHOR#gh-}" ;;
-            *) echo "::warning::unrecognized anchor '${ANCHOR}' — skipping token publish"; exit 0 ;;
-          esac
-          AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          ROW="$(printf '{"leg":"%s","at":"%s","prompt":%s,"completion":%s,"total":%s,"cacheRead":%s,"model":"%s"}' \
-            "${LEG}" "${AT}" "${SUM_IN}" "${SUM_OUT}" "$((SUM_IN + SUM_OUT))" "${SUM_CR}" "${MODEL}")"
-          echo "leg tokens: ${KEY} ${LEG} prompt=${SUM_IN} completion=${SUM_OUT} cached=${SUM_CR} model=${MODEL:-none}"
-          # Bootstrap the data branch exactly like the tick's state publish
-          # (422 "already exists" is the normal case) — then PUT with the
-          # existing sha; 3 attempts absorb concurrent leg publishes.
-          gh api "repos/${REPO}/git/ref/heads/$(gh api "repos/${REPO}" --jq .default_branch)" \
-            --jq .object.sha \
-            | xargs -I{} gh api -X POST "repos/${REPO}/git/refs" -f ref="refs/heads/${DATA_BRANCH}" -f sha={} || true
-          ok=0
-          for attempt in 1 2 3; do
-            SHA=""
-            CUR="{}"
-            if META="$(gh api "repos/${REPO}/contents/${DATA_PATH}?ref=${DATA_BRANCH}" 2>/dev/null)"; then
-              SHA="$(printf %s "${META}" | jq -r .sha)"
-              CUR="$(printf %s "${META}" | jq -r .content | tr -d '\n' | base64 -d 2>/dev/null || echo '{}')"
-              printf %s "${CUR}" | jq empty >/dev/null 2>&1 || CUR='{}'
-            fi
-            CUTOFF="$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%SZ'))")"
-            NEXT="$(printf %s "${CUR}" | jq --argjson row "${ROW}" --arg key "${KEY}" --arg cutoff "${CUTOFF}" \
-              '.[$key] = ((.[$key] // []) + [$row])
-               | with_entries(.value |= (map(select((.at // "") >= $cutoff)) | .[-40:]))
-               | with_entries(select(.value | length > 0))')"
-            ARGS=(api -X PUT "repos/${REPO}/contents/${DATA_PATH}"
-              -f branch="${DATA_BRANCH}"
-              -f message="leg tokens — ${KEY} ${LEG} [skip ci]"
-              -f content="$(printf %s "${NEXT}" | base64)")
-            if [ -n "${SHA}" ]; then ARGS+=(-f sha="${SHA}"); fi
-            if gh "${ARGS[@]}"; then ok=1; break; fi
-            echo "token publish attempt ${attempt} conflicted — refetching"
-            sleep $((attempt * 2))
-          done
-          if [ "${ok}" != "1" ]; then
-            echo "::warning::token publish gave up after 3 attempts (concurrent writes) — rows are decorative, next legs retry"
-          fi
+        # Body: scripts/publish-token-usage.sh (stage-1 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/publish-token-usage.sh"
 
       - name: Mark machine job done (issue task list)
         # always(): the checkbox flips even when the agent run above timed
@@ -1242,34 +636,9 @@ jobs:
           NUMBER: ${{ inputs.issue }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           JOB_RESULT: ${{ job.status }}
-        run: |
-          repo="${{ github.repository }}"
-          case "${JOB_RESULT}" in
-            success) mark="✅" ;;
-            failure) mark="❌" ;;
-            cancelled) mark="🚫" ;;
-            *) mark="⚠️ ${JOB_RESULT}" ;;
-          esac
-          end_ts="$(date -u '+%H:%M')"
-          gh issue view "$NUMBER" --repo "$repo" --json body -q .body > /tmp/issue_body.md
-          awk -v url="(${RUN_URL})" -v mark="$mark" -v end="$end_ts" '
-            index($0, url) > 0 && $0 ~ /^- \[ \]/ {
-              line = $0
-              sub(/^- \[ \] /, "- [x] ", line)
-              if (match(line, /started [0-9][0-9]:[0-9][0-9]/)) {
-                st = substr(line, RSTART, RLENGTH)
-                sub(/started [0-9][0-9]:[0-9][0-9] .*$/, st " · done " end " " mark, line)
-              }
-              $0 = line
-            }
-            { print }
-          ' /tmp/issue_body.md > /tmp/issue_body_new.md
-          if ! cmp -s /tmp/issue_body.md /tmp/issue_body_new.md; then
-            gh issue edit "$NUMBER" --repo "$repo" --body-file /tmp/issue_body_new.md
-            echo "job marker flipped to [x] ${mark}"
-          else
-            echo "::warning::start marker not found for ${RUN_URL} — nothing to flip"
-          fi
+        # Body: scripts/mark-job-done.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/mark-job-done.sh"
 
       - name: Apply the review verdict (review runs only)
         # Zero-maintainer keystone: convert the review agent's verdict into
@@ -1296,196 +665,9 @@ jobs:
           RUN_OUTPUT: .dmtools/run-output.txt
           MACHINE_AUTHOR: ${{ inputs.machine-author }}
           MAX_ROUNDS: ${{ env.MAX_AUTO_REWORK_ROUNDS }}
-        run: |
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::warning::SOURCE_GITHUB_TOKEN not set — verdict labels would not trigger workflows; skipping (a maintainer must label manually)"
-            exit 0
-          fi
-          repo="${{ github.repository }}"
-          labels="$(gh issue view "$NUMBER" --repo "$repo" --json labels \
-            --jq '[.labels[].name] | join(" ")' 2>/dev/null || echo '')"
-          find_linked_pr() {
-            gh pr list --repo "$repo" --state open \
-              --json number,body,headRefName --jq '
-              [.[] | select(
-                  ((.body // "") | test("(?i)\\b(closes|fixes|resolves)\\s+#'"$NUMBER"'\\b"))
-                  or (.headRefName | test("^'"$NUMBER"'[-_.]"))
-                  or (.headRefName | test("(^|[-_./])gh-0*'"$NUMBER"'$")))
-                | .number] | first // empty'
-          }
-          pr="$(find_linked_pr)"
-          # Verdict fallback sources beyond the run output (gh-305): what
-          # the leg itself wrote on the PR (comments + review bodies) and
-          # on the issue. A failed fetch leaves the file absent — the
-          # parser's diagnosis reports it as `missing`, never a hard stop.
-          verdict_dir="$(mktemp -d)"
-          trap 'rm -rf "$verdict_dir"' EXIT
-          pr_comments_json="${verdict_dir}/pr_comments.json"
-          issue_comments_json="${verdict_dir}/issue_comments.json"
-          if [ -n "$pr" ]; then
-            gh pr view "$pr" --repo "$repo" --json comments,reviews \
-              --jq '[(.comments // [])[] | {author: (.author.login // ""), body}] + [(.reviews // [])[] | {author: (.author.login // ""), body}]' \
-              > "$pr_comments_json" 2>/dev/null || rm -f "$pr_comments_json"
-          fi
-          gh issue view "$NUMBER" --repo "$repo" --json comments \
-            --jq '[(.comments // [])[] | {author: (.author.login // ""), body}]' \
-            > "$issue_comments_json" 2>/dev/null || rm -f "$issue_comments_json"
-          # machineAuthor resolution order #2 (js/common/machineAuthor.js):
-          # deployments that set the per-repo .dmtools/config.js knob but
-          # not the workflow input. Best-effort — empty on miss (then only
-          # *[bot] comment authors are trusted).
-          if [ -z "${MACHINE_AUTHOR:-}" ] && [ -r .dmtools/config.js ]; then
-            MACHINE_AUTHOR="$(sed -nE 's/.*machineAuthor["'\'']?[[:space:]]*:[[:space:]]*["'\'']([A-Za-z0-9._-]+)["'\''].*/\1/p' .dmtools/config.js | head -1)"
-          fi
-          # Wave 2 (owner 2026-10-01): the verdict logic versions WITH the
-          # reviewed pack — the unpacked pack's loop/verdict.sh WINS; the
-          # legacy delegation `bash factory-agents/setup/review-verdict.sh decide`
-          # remains the fallback for old pins. The pack cache
-          # (~/.dmtools/packs/<agent>-<version>/) is guaranteed populated
-          # here: the agent run above resolved the review pack parent.
-          VERDICT_SH="${FACTORY_ROOT}/setup/review-verdict.sh"
-          review_agent="$(basename "${{ needs.guard.outputs.config }}" .json)"
-          pack_verdict="$(ls -1 "${HOME}"/.dmtools/packs/"${review_agent}"-*/loop/verdict.sh 2>/dev/null | sort -V | tail -1 || true)"
-          if [ -n "${pack_verdict}" ]; then
-            VERDICT_SH="${pack_verdict}"
-            echo "→ verdict logic: pack ${VERDICT_SH}"
-          else
-            echo "→ verdict logic: legacy tree ${VERDICT_SH} (no ${review_agent} pack loop/verdict.sh unpacked)"
-          fi
-          # Decision (pure logic, eval-safe key=value output): decision,
-          # source, override, blocking_markers, rounds_done, next_round,
-          # escalate, round_labels, diagnosis.
-          eval "$(MAX_ROUNDS="${MAX_ROUNDS}" \
-            PR_REVIEW_JSON="outputs/pr_review.json" \
-            PR_REVIEW_JSON_ALT="outputs/gh-${NUMBER}/pr_review.json" \
-            RUN_OUTPUT="${RUN_OUTPUT}" \
-            PR_COMMENTS_JSON="${pr_comments_json}" \
-            ISSUE_COMMENTS_JSON="${issue_comments_json}" \
-            MACHINE_AUTHOR="${MACHINE_AUTHOR:-}" \
-            ISSUE_LABELS="${labels}" \
-            bash "${VERDICT_SH}" decide)"
-          decision="${decision:-unknown}"
-          escalate="${escalate:-false}"
-          rounds_done="${rounds_done:-0}"
-          next_round="${next_round:-0}"
-          echo "→ review decision: ${decision} (source=${source:-none}, override=${override:-false}, rounds_done=${rounds_done})"
-          strip_round_labels() {
-            for lbl in ${round_labels:-}; do
-              gh issue edit "$NUMBER" --repo "$repo" --remove-label "$lbl" || true
-            done
-          }
-          # bash -e: a missing label would abort the verdict transition —
-          # create-or-update first (--force is an idempotent no-op).
-          ensure_label() {
-            gh label create "$1" --repo "$repo" --color "$2" --force >/dev/null 2>&1 || true
-          }
-          if [ "$decision" = "rework" ]; then
-            if [ "$escalate" = "true" ]; then
-              strip_round_labels
-              ensure_label "needs-human" "B60205"
-              gh issue edit "$NUMBER" --repo "$repo" --add-label "needs-human"
-              thread_summary=""
-              if [ -n "$pr" ]; then
-                owner="${GITHUB_REPOSITORY%%/*}"
-                name="${GITHUB_REPOSITORY#*/}"
-                threads_json="$(mktemp)"
-                if gh api graphql \
-                  -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved path line comments(first:1){nodes{body author{login}}}}}}}}' \
-                  -f owner="$owner" -f name="$name" -F number="$pr" \
-                  > "$threads_json"; then
-                  thread_summary="$(bash "${VERDICT_SH}" threads "$threads_json")"
-                else
-                  echo "::warning::reviewThreads fetch failed — the findings live in the PR review comments"
-                fi
-                rm -f "$threads_json"
-              fi
-              body_file="$(mktemp)"
-              {
-                echo "🛑 **Auto-rework loop capped** — ${rounds_done} automatic rework rounds without an APPROVE verdict (cap: ${MAX_ROUNDS}). The machine stopped labeling \`agent:rework\`."
-                echo ""
-                if [ -n "$pr" ]; then
-                  echo "### Unresolved review threads on PR #${pr}"
-                  echo ""
-                  if [ -n "$thread_summary" ]; then
-                    printf '%s\n' "$thread_summary"
-                  fi
-                  echo ""
-                  echo "_If no threads are listed, the findings live in the PR general comments._"
-                else
-                  echo "_No linked open PR found for this issue._"
-                fi
-                echo ""
-                echo "**Next step (human):** fix the remaining findings directly and re-label \`agent:review\` for a fresh review — or re-label \`agent:rework\` to re-arm the agent loop with a fresh round cap."
-              } > "$body_file"
-              gh issue comment "$NUMBER" --repo "$repo" --body-file "$body_file"
-              rm -f "$body_file"
-              echo "→ labeled needs-human — auto-rework capped after ${rounds_done} round(s)"
-              exit 0
-            fi
-            # agent:rework FIRST (ordering is load-bearing: the round-label
-            # event must not outrank the rework queue label), then the counter.
-            gh issue edit "$NUMBER" --repo "$repo" --remove-label "needs-human" || true
-            strip_round_labels
-            gh issue edit "$NUMBER" --repo "$repo" --add-label "agent:rework"
-            ensure_label "rework-round-${next_round}" "BFD4F2"
-            gh issue edit "$NUMBER" --repo "$repo" --add-label "rework-round-${next_round}"
-            echo "→ labeled agent:rework (round ${next_round}/${MAX_ROUNDS}) — rework run queued (re-review follows automatically)"
-            exit 0
-          fi
-          if [ "$decision" != "approve" ]; then
-            # gh-305: the old `::warning:: … skipping labeling` STRANDED
-            # the cycle post-review (no REQUEST_CHANGES → rework, no
-            # approval → merge) with nothing but a warning line. Fail
-            # LOUDLY and leave a diagnosable marker: ::error:: annotation
-            # (red step), needs-human label, per-source diagnosis comment.
-            echo "::error::no verdict found in any source (pr_review.json / run output / PR comments / issue comments) — the review cycle cannot be labeled (gh-305)"
-            echo "→ diagnosis: ${diagnosis:-none}"
-            ensure_label "needs-human" "B60205"
-            gh issue edit "$NUMBER" --repo "$repo" --add-label "needs-human"
-            body_file="$(mktemp)"
-            {
-              echo "🛑 **Review verdict missing** — the review leg finished, but no verdict (APPROVE / REQUEST_CHANGES / BLOCK) was found in any source, so the cycle cannot be labeled."
-              echo ""
-              echo "Per-source diagnosis: \`${diagnosis:-n/a}\`"
-              echo ""
-              echo "_Next step (human):_ read the review leg's run output, then label \`pr_approved\` (approve) or \`agent:rework\` (changes requested) — or re-run the review leg."
-            } > "$body_file"
-            gh issue comment "$NUMBER" --repo "$repo" --body-file "$body_file"
-            rm -f "$body_file"
-            exit 1
-          fi
-          echo "→ review verdict: approve"
-          if [ -z "$pr" ]; then
-            echo "::warning::APPROVE verdict but no linked open PR for #${NUMBER} — skipping pr_approved"
-            exit 0
-          fi
-          echo "→ linked PR #${pr} — waiting for green checks (≤10 min)"
-          deadline=$((SECONDS + 600))
-          while :; do
-            states="$(gh pr view "$pr" --repo "$repo" --json statusCheckRollup \
-              --jq '.statusCheckRollup[] | if .status and .status != "COMPLETED"
-                    then "PENDING" else (.conclusion // .state // "PENDING") end' \
-              2>/dev/null || true)"
-            if [ -n "$states" ]; then
-              if echo "$states" | grep -qxE 'FAILURE|ERROR|CANCELLED|TIMED_OUT|ACTION_REQUIRED|STARTUP_FAILURE|STALE'; then
-                echo "::warning::PR #${pr} checks FAILED — verdict not trusted, no label (a fresh dev/rework round must fix CI first)"
-                exit 0
-              fi
-              if ! echo "$states" | grep -qvxE 'SUCCESS|SKIPPED|NEUTRAL'; then
-                echo "→ PR #${pr} checks green"
-                break
-              fi
-            fi
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::warning::PR #${pr} checks still pending after 10 min — skipping pr_approved (re-label or re-run to retry)"
-              exit 0
-            fi
-            sleep 30
-          done
-          strip_round_labels
-          gh issue edit "$NUMBER" --repo "$repo" --remove-label "needs-human" || true
-          gh issue edit "$NUMBER" --repo "$repo" --add-label "pr_approved"
-          echo "→ labeled pr_approved — merge-trigger will squash-merge PR #${pr} once CLEAN"
+        # Body: scripts/apply-review-verdict.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/apply-review-verdict.sh"
 
       - name: Close the review cycle (review runs only)
         # A review run must never re-queue itself: strip the queue label at
@@ -1494,10 +676,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NUMBER: ${{ inputs.issue }}
-        run: |
-          gh issue edit "$NUMBER" --repo "${{ github.repository }}" \
-            --remove-label "agent:review" || true
-          echo "→ review cycle closed (agent:review removed)"
+        # Body: scripts/close-review-cycle.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/close-review-cycle.sh"
 
       - name: Close the rework cycle (rework runs only)
         # Symmetric strip: a stale agent:rework would silently swallow every
@@ -1508,16 +689,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NUMBER: ${{ inputs.issue }}
           PR_NUMBER: ${{ inputs.pr }}
-        run: |
-          if [ -n "$PR_NUMBER" ]; then
-            gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" \
-              --remove-label "agent:rework" || true
-            echo "→ rework cycle closed (agent:rework removed from PR #$PR_NUMBER)"
-          else
-            gh issue edit "$NUMBER" --repo "${{ github.repository }}" \
-              --remove-label "agent:rework" || true
-            echo "→ rework cycle closed (agent:rework removed)"
-          fi
+        # Body: scripts/close-rework-cycle.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/close-rework-cycle.sh"
 
       - name: Persist fa project memory into the repository
         # fa project memory (.fah/memory) committed back = agent knowledge
@@ -1526,26 +700,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
-        run: |
-          bash "${RUNNER_TEMP}/factory-kit/kit/install-source-git-credentials.sh" 2>/dev/null \
-            || bash "${FACTORY_ROOT}/setup/install-source-git-credentials.sh"
-          echo "── post-agent extraheader trace (must be empty) ──"
-          git config --show-origin --get-all http.https://github.com/.extraheader | sed -E 's/^([^\t]*\t).*/\1<redacted>/; t; s/.+/<redacted> (unexpected line without origin)/' || true
-          if git config --get-all http.https://github.com/.extraheader | grep -q .; then
-            echo "::error::App-token extraheader reappeared after the agent session — a mid-run re-assertion would push as github-actions[bot]"
-            exit 1
-          fi
-          if [ -d .fah/memory ] && [ -n "$(git status --porcelain -- .fah/memory)" ]; then
-            git add .fah/memory
-            git commit -m "chore(fa): persist agent project memory [skip ci]"
-            git push || echo "::warning::memory push rejected (protected branch?) — kept in run only"
-          else
-            echo "no new fa memory to persist"
-          fi
-          if [ -f .dmtools/credential-helper.log ]; then
-            echo "── SOURCE_GITHUB_TOKEN helper invocations this run ──"
-            cat .dmtools/credential-helper.log
-          fi
+        # Body: scripts/persist-fa-memory.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/persist-fa-memory.sh"
 
       - name: Quarantine poisoned fa session
         # Owner RCA (dmd PR-266, 2026-09-27): the session store's dark side.
@@ -1569,41 +726,10 @@ jobs:
         env:
           FA_SESS_BRANCH: fa-sess/${{ needs.guard.outputs.anchor }}
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
-        run: |
-          FA_TRACE="${GITHUB_WORKSPACE}/.dmtools/fa-trace.log"
-          SESS_DIR="${GITHUB_WORKSPACE}/.dmtools/fa-sessions"
-          silence_limit="${FA_TRACE_QUARANTINE_SILENCE_MINUTES:-5}"
-          if [ ! -f "${FA_TRACE}" ]; then
-            echo "no fa trace — cannot judge session health; leaving the session in place"
-            exit 0
-          fi
-          mtime="$(stat -c %Y "${FA_TRACE}" 2>/dev/null || stat -f %m "${FA_TRACE}" 2>/dev/null || echo 0)"
-          age_min=$(( ( $(date +%s) - mtime ) / 60 ))
-          if [ "${age_min}" -lt "${silence_limit}" ]; then
-            echo "fa trace was active ${age_min} min ago (< ${silence_limit}) — the session was working; keeping it for the next leg"
-            exit 0
-          fi
-          echo "::warning::fa session poisoned: leg '${{ steps.run_agent.outcome }}' with the trace silent for ${age_min} min (limit ${silence_limit}) — quarantining the session and deleting ${FA_SESS_BRANCH} so the next leg starts fresh"
-          QUAR_DIR="${GITHUB_WORKSPACE}/.dmtools/fa-sessions-quarantine/run-${{ github.run_id }}-attempt-${{ github.run_attempt }}"
-          mkdir -p "$(dirname "${QUAR_DIR}")"
-          if [ -d "${SESS_DIR}" ]; then
-            mv "${SESS_DIR}" "${QUAR_DIR}"
-            echo "→ session store moved to .dmtools/fa-sessions-quarantine/ (the persist step below will find nothing)"
-          else
-            echo "→ no local session store to quarantine"
-          fi
-          { echo ""
-            echo "🧟 FA-SESSION-QUARANTINE: leg '${{ steps.run_agent.outcome }}' with the trace silent for ${age_min} min — session quarantined, ${FA_SESS_BRANCH} deleted; the next leg starts a fresh session."
-          } >> "${GITHUB_WORKSPACE}/.dmtools/run-output.txt" 2>/dev/null || true
-          # The restore step reads refs/heads/fa-sess/<anchor> — drop it, or
-          # the next leg restores the poison despite the local quarantine
-          # (the persist step early-exits on the missing dir and never
-          # overwrites the branch with anything else).
-          if git push origin --delete "${FA_SESS_BRANCH}" 2>/dev/null; then
-            echo "→ ${FA_SESS_BRANCH} deleted — the next leg starts a fresh session"
-          else
-            echo "::error::could not delete ${FA_SESS_BRANCH} — the next leg may restore the poisoned session; delete the branch manually"
-          fi
+          AGENT_OUTCOME: ${{ steps.run_agent.outcome }}
+        # Body: scripts/quarantine-fa-session.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/quarantine-fa-session.sh"
 
       - name: Collect fa crash log (uncaught errors live outside the workspace)
         # fa's last-resort handler appends uncaught errors (e.g. the
@@ -1611,14 +737,9 @@ jobs:
         # dmd PR-266 legs) to $HOME/.fah/crash.log — outside the workspace,
         # invisible to the artifact below. Copy it in, best-effort.
         if: always()
-        run: |
-          mkdir -p .dmtools
-          if [ -f "${HOME}/.fah/crash.log" ]; then
-            cp "${HOME}/.fah/crash.log" .dmtools/fa-crash.log
-            echo "fa crash log collected ($(wc -l < .dmtools/fa-crash.log) lines)"
-          else
-            echo "no fa crash log (${HOME}/.fah/crash.log absent)"
-          fi
+        # Body: scripts/collect-fa-crash-log.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/collect-fa-crash-log.sh"
 
       - name: Upload the full fa session trace
         # AFTER the memory-persist push: the artifact must include the final
@@ -1644,33 +765,11 @@ jobs:
         env:
           FA_SESS_BRANCH: fa-sess/${{ needs.guard.outputs.anchor }}
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
-        run: |
-          if [ ! -d .dmtools/fa-sessions ] || \
-             [ -z "$(find .dmtools/fa-sessions -type f -print -quit 2>/dev/null)" ]; then
-            echo "no fa session to persist"
-            exit 0
-          fi
-          git config user.name "dm.ai"
-          git config user.email "dm.ai@epam.com"
-          git fetch --depth 1 origin "refs/heads/$FA_SESS_BRANCH" || true
-          SESS_SNAP="$(mktemp -d)"
-          cp -a .dmtools/fa-sessions "$SESS_SNAP/"
-          git switch --orphan "$FA_SESS_BRANCH" 2>/dev/null || git switch -C "$FA_SESS_BRANCH"
-          rm -rf .dmtools/fa-sessions
-          mkdir -p .dmtools
-          cp -a "$SESS_SNAP/fa-sessions" .dmtools/
-          rm -rf "$SESS_SNAP"
-          git add -f .dmtools/fa-sessions
-          if git diff --cached --quiet; then
-            echo "fa session staged nothing (ignored/empty) — nothing to persist"
-            exit 0
-          fi
-          git commit -m "fa sessions: GH-${{ needs.guard.outputs.anchor }} (${{ needs.guard.outputs.config }}) [skip ci]"
-          if git push origin "HEAD:$FA_SESS_BRANCH" --force; then
-            echo "→ fa session persisted to $FA_SESS_BRANCH"
-          else
-            echo "::warning::fa session push rejected — session not persisted"
-          fi
+          ANCHOR: ${{ needs.guard.outputs.anchor }}
+          CONFIG: ${{ needs.guard.outputs.config }}
+        # Body: scripts/persist-fa-session.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/persist-fa-session.sh"
 
       - name: Hand the issue to the reviewer (dev runs only)
         # Remove-then-add agent:review so the `labeled` event always fires
@@ -1680,14 +779,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
           NUMBER: ${{ inputs.issue }}
-        run: |
-          gh issue edit "$NUMBER" --repo "${{ github.repository }}" \
-            --remove-label "agent:rework" || true
-          gh issue edit "$NUMBER" --repo "${{ github.repository }}" \
-            --remove-label "agent:review" || true
-          gh issue edit "$NUMBER" --repo "${{ github.repository }}" \
-            --add-label "agent:review"
-          echo "→ labeled agent:review (agent:rework stripped) — pr_review run queued"
+        # Body: scripts/hand-issue-to-reviewer.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
+        # delivered via the factory-kit fetch at the invocation ref).
+        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/hand-issue-to-reviewer.sh"
 
       - name: Link the run back to the issue
         if: always() && inputs.pr == ''

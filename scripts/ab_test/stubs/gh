@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Deterministic gh stub for A/B scenarios.
+#  - logs every invocation (argv) to $GH_CALL_LOG  -> compared old vs new
+#  - `--body-file F` / `--body F` contents are logged (fenced) so issue/PR
+#    edits are compared byte-for-byte, not just their paths
+#  - responses come from $GH_STUB_RULES (TSV): REGEX<TAB>MODE<TAB>PAYLOAD
+#      out    payload printed verbatim
+#      json   payload is a FILE; printed; piped through `jq -r PROG` when the
+#             call carries --jq/-q (gh's gojq prints top-level strings raw, as
+#             does jq -r)
+#      file   payload is a FILE; copied over the call's --dir argument
+#             (gh release download)
+#      fail   exit 1 (after logging)
+#    payload may start with "@@FAIL_UNTIL:<n>@@" — that rule's first <n> calls
+#    fail (per-rule call counter), exercising the conflict-retry paths.
+# No rule matched => loud failure (forces scenarios to stub every gh call).
+{
+  printf 'gh'
+  for a in "$@"; do printf ' [%s]' "$a"; done
+  printf '\n'
+} >> "${GH_CALL_LOG:?GH_CALL_LOG unset}"
+
+# log --body-file/--body payloads (content-level comparison of edits)
+prev=""
+for a in "$@"; do
+  if [ "${prev}" = "--body-file" ] && [ -f "${a}" ]; then
+    { printf '--- body-file ---\n'; cat "${a}"; printf '--- end body-file ---\n'; } >> "${GH_CALL_LOG}"
+  elif [ "${prev}" = "--body" ]; then
+    { printf '--- body ---\n'; printf '%s\n' "${a}"; printf '--- end body ---\n'; } >> "${GH_CALL_LOG}"
+  fi
+  prev="$a"
+done
+
+jqprog="" ; prev=""
+for a in "$@"; do
+  [ "${prev}" = "--jq" ] || [ "${prev}" = "-q" ] && jqprog="$a"
+  prev="$a"
+done
+
+args_join="$(printf '%s ' "$@")"
+rule_file="${GH_STUB_RULES:?GH_STUB_RULES unset}"
+[ -f "${rule_file}" ] || { echo "gh-stub: no rules file" >&2; exit 1; }
+
+lineno=0
+while IFS=$'\t' read -r regex mode payload; do
+  lineno=$((lineno+1))
+  printf '%s' "${args_join}" | grep -Eq -- "${regex}" || continue
+  local_count_file="${GH_CALL_LOG}.rulecount.${lineno}"
+  n=$(( $(cat "${local_count_file}" 2>/dev/null || echo 0) + 1 ))
+  echo "${n}" > "${local_count_file}"
+  fu="${payload%%@@*}"
+  if [[ "${payload}" == '@@FAIL_UNTIL:'* ]]; then
+    until_n="${payload#@@FAIL_UNTIL:}"; until_n="${until_n%%@@*}"
+    payload="${payload#*@@}"; payload="${payload#*@@}"
+    if [ "${n}" -le "${until_n}" ]; then exit 1; fi
+  fi
+  case "${mode}" in
+    out)   printf '%s\n' "${payload}"; exit 0 ;;
+    json)  if [ -n "${jqprog}" ]; then jq -r "${jqprog}" "${payload}"; else cat "${payload}"; fi; exit 0 ;;
+    file)  dir=""; prev=""
+           for a in "$@"; do [ "${prev}" = "--dir" ] && dir="$a"; prev="$a"; done
+           [ -n "${dir}" ] || { echo "gh-stub: file mode without --dir" >&2; exit 9; }
+           cp "${payload}" "${dir}/"; exit 0 ;;
+    fail)  exit 1 ;;
+    *)     echo "gh-stub: bad mode ${mode}" >&2; exit 9 ;;
+  esac
+done < "${rule_file}"
+
+echo "gh-stub: NO RULE matched: ${args_join}" >&2
+exit 1

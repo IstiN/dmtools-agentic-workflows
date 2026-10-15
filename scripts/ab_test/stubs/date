@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Frozen-clock date stub: everything resolves from $FROZEN_EPOCH.
+printf 'date %s\n' "$*" >> "${DATE_LOG:-/dev/null}"
+if [ "${1:-}" = "+%s" ]; then printf '%s\n' "${FROZEN_EPOCH:?FROZEN_EPOCH unset}"; exit 0; fi
+args=()
+for a in "$@"; do [ "$a" = "-u" ] || args+=("$a"); done
+exec /bin/date -u -r "${FROZEN_EPOCH:?FROZEN_EPOCH unset}" "${args[@]}"
