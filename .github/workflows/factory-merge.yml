@@ -51,7 +51,7 @@ on:
       runner:
         description: 'Runner label (self-hosted pools must be visible to the CALLING org)'
         type: string
-        default: 'ubuntu-24.04'
+        default: 'ubuntu-slim'
       dry-run:
         description: "'true' to log the plan without acting (STRING — boolean-typed reusable inputs cannot take expressions)."
         required: false
@@ -88,7 +88,7 @@ env:
 
 jobs:
   merge:
-    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
+    runs-on: ${{ inputs.runner || 'ubuntu-slim' }}
     timeout-minutes: 5
     steps:
       - name: Checkout target repository

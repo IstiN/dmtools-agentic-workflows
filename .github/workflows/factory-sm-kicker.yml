@@ -112,7 +112,7 @@ env:
 
 jobs:
   sm-liveness:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - name: Dispatch an SM tick if none is queued or running
         run: |
@@ -132,7 +132,7 @@ jobs:
           fi
 
   head-completeness:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - name: Dispatch CI on codeless PR heads that carry no required contexts
         run: |
