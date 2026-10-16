@@ -110,6 +110,32 @@
   fi
   echo "anchor=gh-${NUMBER}" >> "$GITHUB_OUTPUT"
 
+  # RACE GUARD (live: agents #934, 2026-10-16 — an `assigned` and a
+  # `labeled` event for one issue BOTH passed the fresh-label refresh
+  # before either applied its status labels; the per-issue concurrency
+  # group (cancel-in-progress: false) queued both — duplicate legs).
+  # An EVENT-triggered run self-cancels when a sibling leg already
+  # carries the anchor: in_progress, or queued with an EARLIER run id
+  # (the elder twin wins). Explicit dispatches (inputs.leg) always win
+  # and never self-cancel. Title match is "#N" — the issues-event echo
+  # shape ("teammate: issues #N"); PR-anchored dispatches spell
+  # pr-N/gh-N and do not collide.
+  if [ -z "${INPUT_LEG:-}" ]; then
+    sibling="$(gh run list --repo "${GITHUB_REPOSITORY}" \
+      --workflow "${GITHUB_WORKFLOW}" --limit 30 \
+      --json databaseId,status,displayTitle \
+      --jq ".[] | select(.databaseId != ${GITHUB_RUN_ID}) \
+            | select(.status == \"in_progress\" or (.status == \"queued\" and .databaseId < ${GITHUB_RUN_ID})) \
+            | select(.displayTitle | contains(\"#${NUMBER}\")) | .databaseId" \
+      | head -1)"
+    if [ -n "$sibling" ]; then
+      echo "::notice::race guard: sibling run ${sibling} already carries #${NUMBER} — self-cancelling (event echo)"
+      gh run cancel "${GITHUB_RUN_ID}" --repo "${GITHUB_REPOSITORY}" || true
+      sleep 10
+      exit 0
+    fi
+  fi
+
   # ALWAYS refresh labels/assignees from the API — not just for
   # explicit dispatches. Event-triggered runs (issues:assigned,
   # labeled, ...) sit QUEUED behind the per-issue concurrency group,
