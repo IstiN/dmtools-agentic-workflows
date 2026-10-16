@@ -122,14 +122,29 @@ jobs:
           bash /tmp/dmtools-install.sh "${DMTOOLS_TAG}"
           echo "$HOME/.dmtools/bin" >> "$GITHUB_PATH"
 
+      - name: Detect merge App
+        id: app
+        env:
+          APP_ID: ${{ secrets.MERGE_APP_ID }}
+        run: echo "enabled=$([ -n "$APP_ID" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - name: Mint merge App token
+        id: app-token
+        if: steps.app.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.MERGE_APP_ID }}
+          private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
       - name: Run the merge bot
         # Runs as a VERSIONED AGENT PACK (machine_merge@latest): the pack
         # carries mergeBot.js + its require() closure, sha256-verified
         # against the release catalog. CWD = target repo root (config
         # discovery parity with the old submodule checkout).
         env:
-          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
-          SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          # Optional merge identity: a GitHub App token minted per run
+          # (expires with the job). Absent MERGE_APP_ID secret =>
+          # SOURCE_GITHUB_TOKEN (PAT) as before. Salvaged from #35.
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
+          SOURCE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
         run: |
           export DMTOOLS_PACK_REGISTRY="https://github.com/IstiN/dmtools-agents/releases/download/${AGENTS_TAG}"
           repo='${{ github.repository }}'

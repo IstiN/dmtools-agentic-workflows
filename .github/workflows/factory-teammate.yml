@@ -90,6 +90,25 @@ on:
         required: false
         default: ''
         type: string
+      # Optional agent-work toolchains (salvaged from #35): "" (default)
+      # installs NOTHING — explicit opt-in per caller. The dmtools engine
+      # and its dart runtime are installed by install-dmtools-cli.sh and
+      # are NEVER gated on these inputs.
+      java-version:
+        description: 'JDK for agent work (Temurin, Gradle/Maven cache). "" (default) installs NOTHING. e.g. "21".'
+        required: false
+        default: ''
+        type: string
+      node-version:
+        description: 'Node.js for agent work (npm cache). "" (default) installs NOTHING. e.g. "20".'
+        required: false
+        default: ''
+        type: string
+      python-version:
+        description: 'Python for agent work. "" (default) installs NOTHING. e.g. "3.12".'
+        required: false
+        default: ''
+        type: string
       flutter-version:
         description: 'Flutter SDK for agent work (cached). "" (default) installs NOTHING — most consumers are not Flutter projects and bring their own toolchain via the setup/install scripts. A value installs Flutter+matching Dart via flutter-action with SDK caching (e.g. "stable", "3.38.0"); Flutter targets (fa) pass it explicitly.'
         required: false
@@ -160,6 +179,23 @@ jobs:
           # history walks. fetch-depth 0 cloned the FULL history here
           # (~1 min on fa, every leg) for nothing.
           fetch-depth: 1
+      - name: Set up Java for agent work
+        if: inputs.java-version != ''
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+          cache: gradle
+      - name: Set up Node.js for agent work
+        if: inputs.node-version != ''
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Set up Python for agent work
+        if: inputs.python-version != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
       - name: Fetch factory scripts (this repo @ invocation ref)
         # Stage-2 de-bloat delivery: the guard's domain step (scripts/
         # teammate-dispatch-gate.sh) rides the same immutable factory-kit
