@@ -243,17 +243,6 @@ jobs:
           persist-credentials: false
 
 
-      - name: Resolve factory ref (self-pin)
-        # github.workflow_ref = "<owner>/<repo>/.github/workflows/factory-teammate.yml@<ref>"
-        # — runners, scripts and workflow are checked out at EXACTLY the ref
-        # the caller invoked: engine and factory can never skew apart.
-        run: |
-          # The stub passes the same literal its uses-line pins — engine and
-          # factory can never skew apart. Keep both in sync when flipping refs.
-          if [ -n "${{ inputs.factory_ref }}" ]; then
-            echo "FACTORY_REF=${{ inputs.factory_ref }}" >> "$GITHUB_ENV"
-          fi
-
       - name: "Fetch factory kit (this repo @ invocation ref — immutable)"
         # Trust-boundary scripts (git push guard, source PAT credentials)
         # ride the SAME immutable ref the caller invoked this workflow at
