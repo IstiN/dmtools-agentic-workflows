@@ -83,14 +83,6 @@ on:
         description: 'Why this dispatch (audit trail, shown in logs)'
         required: false
         type: string
-      factory_ref:
-        # DEPRECATED 2026-10-16: provenance-only relic of the submodule
-        # lockstep (engine pin == agents gitlink). Nothing reads it — the
-        # kit rides this repo's invocation ref and agents-rel releases.
-        description: 'Unused since dart#412 / fa vars-flip. Kept as no-op for old callers.'
-        required: false
-        default: ''
-        type: string
       flutter-version:
         description: 'Flutter SDK for agent work (cached). "" (default) installs NOTHING — most consumers are not Flutter projects and bring their own toolchain via the setup/install scripts. A value installs Flutter+matching Dart via flutter-action with SDK caching (e.g. "stable", "3.38.0"); Flutter targets (fa) pass it explicitly.'
         required: false
