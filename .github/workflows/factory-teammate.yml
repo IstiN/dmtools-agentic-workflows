@@ -709,9 +709,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NUMBER: ${{ inputs.issue }}
-        # Body: scripts/close-review-cycle.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
-        # delivered via the factory-kit fetch at the invocation ref).
-        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/close-review-cycle.sh"
+        # Engine-side since dmtools-agents#938: the review-cycle close is SM
+        # cycle logic and ships in the factory-setup zip (pack
+        # agents-rel-20261016-210033+). The awf copy is gone — this is the
+        # only source now (ordered flip: pack landed first).
+        run: bash -e "${RUNNER_TEMP}/factory-setup/scripts/close-review-cycle.sh"
 
       - name: Close the rework cycle (rework runs only)
         # Symmetric strip: a stale agent:rework would silently swallow every
@@ -722,9 +724,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NUMBER: ${{ inputs.issue }}
           PR_NUMBER: ${{ inputs.pr }}
-        # Body: scripts/close-rework-cycle.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
-        # delivered via the factory-kit fetch at the invocation ref).
-        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/close-rework-cycle.sh"
+        # Engine-side since dmtools-agents#938: the rework-cycle close is SM
+        # cycle logic and ships in the factory-setup zip (pack
+        # agents-rel-20261016-210033+). The awf copy is gone — this is the
+        # only source now (ordered flip: pack landed first).
+        run: bash -e "${RUNNER_TEMP}/factory-setup/scripts/close-rework-cycle.sh"
 
       - name: Persist fa project memory into the repository
         # fa project memory (.fah/memory) committed back = agent knowledge
