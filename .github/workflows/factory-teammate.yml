@@ -52,7 +52,6 @@ on:
       # the CALLER's context, so github.workflow_ref carries the caller's ref
       # (dart's branch), which is meaningless against the awf remote. The
       # stub passes its own pin here (main in production) — same pattern as
-      # factory_ref: the factory cannot see its own uses: ref.
       factory_home_ref:
         description: Awf ref the caller pinned factory-teammate.yml to
         type: string
