@@ -246,6 +246,14 @@ jobs:
           else
             git clone --depth 1 https://github.com/IstiN/dmtools-agents agents
           fi
+          # The fetched agents/ is an embedded git repo. If the leg session
+          # runs `git add .`, git records it as a GITLINK (160000) — and
+          # every later checkout of that branch dies with 'fatal: No url
+          # found for submodule path agents in .gitmodules' (live:
+          # dart ai/gh-379 @1a4feffb, fa ai/gh-1646 @4e2b9ea, 2026-10-16).
+          # Legs only READ the tree — drop its .git and make git ignore it.
+          rm -rf agents/.git
+          git check-ignore -q agents || printf 'agents/\n' >> .gitignore
 
       - name: Resolve factory ref (self-pin)
         # github.workflow_ref = "<owner>/<repo>/.github/workflows/factory-teammate.yml@<ref>"
