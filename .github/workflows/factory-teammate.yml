@@ -645,9 +645,11 @@ jobs:
           RUN_OUTPUT: ${{ github.workspace }}/.dmtools/run-output.txt
           DATA_BRANCH: factory-data
           DATA_PATH: data/fa-tokens.json
-        # Body: scripts/publish-token-usage.sh (stage-1 de-bloat — byte-extracted, behavior-identical;
-        # delivered via the factory-kit fetch at the invocation ref).
-        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/publish-token-usage.sh"
+        # Engine-side since dmtools-agents#940: the token-usage ledger publish
+        # is SM cycle logic and ships in the factory-setup zip (pack
+        # agents-rel-20261016-212752+). The awf copy is gone — this is the
+        # only source now (ordered flip: pack landed first).
+        run: bash -e "${RUNNER_TEMP}/factory-setup/scripts/publish-token-usage.sh"
 
       - name: Mark machine job done (issue task list)
         # always(): the checkbox flips even when the agent run above timed
@@ -808,9 +810,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
           NUMBER: ${{ inputs.issue }}
-        # Body: scripts/hand-issue-to-reviewer.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
-        # delivered via the factory-kit fetch at the invocation ref).
-        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/hand-issue-to-reviewer.sh"
+        # Engine-side since dmtools-agents#940: the issue-to-reviewer hand-off
+        # is SM cycle logic and ships in the factory-setup zip (pack
+        # agents-rel-20261016-212752+). The awf copy is gone — this is the
+        # only source now (ordered flip: pack landed first).
+        run: bash -e "${RUNNER_TEMP}/factory-setup/scripts/hand-issue-to-reviewer.sh"
 
       - name: Link the run back to the issue
         if: always() && inputs.pr == ''
