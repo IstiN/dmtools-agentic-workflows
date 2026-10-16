@@ -660,9 +660,11 @@ jobs:
           RUN_OUTPUT: .dmtools/run-output.txt
           MACHINE_AUTHOR: ${{ inputs.machine-author }}
           MAX_ROUNDS: ${{ env.MAX_AUTO_REWORK_ROUNDS }}
-        # Body: scripts/apply-review-verdict.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
-        # delivered via the factory-kit fetch at the invocation ref).
-        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/apply-review-verdict.sh"
+        # Engine-side since dmtools-agents#935: the verdict application is SM
+        # cycle logic and ships in the factory-setup zip (pack
+        # agents-rel-20261016-185247+). The awf copy is gone — this is the
+        # only source now (ordered flip: pack landed first).
+        run: bash -e "${RUNNER_TEMP}/factory-setup/scripts/apply-review-verdict.sh"
 
       - name: Close the review cycle (review runs only)
         # A review run must never re-queue itself: strip the queue label at
