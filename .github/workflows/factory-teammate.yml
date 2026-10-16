@@ -82,6 +82,14 @@ on:
         description: 'Why this dispatch (audit trail, shown in logs)'
         required: false
         type: string
+      factory_ref:
+        # TEMPORARY no-op (2026-10-16 incident: legs startup_fail while
+        # callers still send it — fa wrapper fix in flight, agents done in
+        # #931). Remove AGAIN only after EVERY caller stops passing it.
+        description: 'Deprecated, unread no-op. Do not use.'
+        required: false
+        default: ''
+        type: string
       flutter-version:
         description: 'Flutter SDK for agent work (cached). "" (default) installs NOTHING — most consumers are not Flutter projects and bring their own toolchain via the setup/install scripts. A value installs Flutter+matching Dart via flutter-action with SDK caching (e.g. "stable", "3.38.0"); Flutter targets (fa) pass it explicitly.'
         required: false
