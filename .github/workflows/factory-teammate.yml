@@ -362,9 +362,12 @@ jobs:
         # branch per issue; the per-issue concurrency group serializes writers.
         env:
           FA_SESS_BRANCH: fa-sess/${{ needs.guard.outputs.anchor }}
-        # Body: scripts/restore-fa-session.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
-        # delivered via the factory-kit fetch at the invocation ref).
-        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/restore-fa-session.sh"
+        # Engine-side since dmtools-agents#943: the fa-session restore from the
+        # fa-sess/<anchor> git branch is session-lifecycle logic and ships in
+        # the factory-setup zip (pack agents-rel-20261016-215704+). The awf
+        # copy is gone — this is the only source now (ordered flip: pack
+        # landed first).
+        run: bash -e "${RUNNER_TEMP}/factory-setup/scripts/restore-fa-session.sh"
 
       - name: Cache fa CLI (by version)
         if: env.FA_VERSION != 'latest'
@@ -609,9 +612,12 @@ jobs:
           if [ -n "$MA" ]; then
             DMTOOLS_ARGS+=('{"params":{"jobParams":{"machineAuthor":"'"$MA"'"}}}')
           fi
-          # Body: scripts/fa-trace-watchdog.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
-          # backgrounded like the inline `( ... ) &` subshell it replaces).
-          RUN_OUTPUT="${RUN_OUTPUT}" bash -e "${RUNNER_TEMP}/factory-kit/scripts/fa-trace-watchdog.sh" &
+          # Engine-side since dmtools-agents#943: the fa-trace watchdog ships
+          # in the factory-setup zip (pack agents-rel-20261016-215704+); the
+          # awf copy is gone — this is the only source now (ordered flip:
+          # pack landed first). Backgrounded like the inline `( ... ) &`
+          # subshell it replaced at extraction.
+          RUN_OUTPUT="${RUN_OUTPUT}" bash -e "${RUNNER_TEMP}/factory-setup/scripts/fa-trace-watchdog.sh" &
           WATCHDOG_PID=$!
           # Body: scripts/stall-capture.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
           # backgrounded like the inline `( ... ) &` subshell it replaces).
@@ -731,9 +737,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
-        # Body: scripts/persist-fa-memory.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
-        # delivered via the factory-kit fetch at the invocation ref).
-        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/persist-fa-memory.sh"
+        # Engine-side since dmtools-agents#943: the fa memory persist is
+        # session-lifecycle logic and ships in the factory-setup zip (pack
+        # agents-rel-20261016-215704+). The awf copy is gone — this is the
+        # only source now (ordered flip: pack landed first).
+        run: bash -e "${RUNNER_TEMP}/factory-setup/scripts/persist-fa-memory.sh"
 
       - name: Quarantine poisoned fa session
         # Owner RCA (dmd PR-266, 2026-09-27): the session store's dark side.
@@ -758,9 +766,11 @@ jobs:
           FA_SESS_BRANCH: fa-sess/${{ needs.guard.outputs.anchor }}
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
           AGENT_OUTCOME: ${{ steps.run_agent.outcome }}
-        # Body: scripts/quarantine-fa-session.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
-        # delivered via the factory-kit fetch at the invocation ref).
-        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/quarantine-fa-session.sh"
+        # Engine-side since dmtools-agents#943: the poisoned-session quarantine
+        # is session-lifecycle logic and ships in the factory-setup zip (pack
+        # agents-rel-20261016-215704+). The awf copy is gone — this is the
+        # only source now (ordered flip: pack landed first).
+        run: bash -e "${RUNNER_TEMP}/factory-setup/scripts/quarantine-fa-session.sh"
 
       - name: Collect fa crash log (uncaught errors live outside the workspace)
         # fa's last-resort handler appends uncaught errors (e.g. the
@@ -768,9 +778,11 @@ jobs:
         # dmd PR-266 legs) to $HOME/.fah/crash.log — outside the workspace,
         # invisible to the artifact below. Copy it in, best-effort.
         if: always()
-        # Body: scripts/collect-fa-crash-log.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
-        # delivered via the factory-kit fetch at the invocation ref).
-        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/collect-fa-crash-log.sh"
+        # Engine-side since dmtools-agents#943: the crash-log collection is
+        # session-lifecycle logic and ships in the factory-setup zip (pack
+        # agents-rel-20261016-215704+). The awf copy is gone — this is the
+        # only source now (ordered flip: pack landed first).
+        run: bash -e "${RUNNER_TEMP}/factory-setup/scripts/collect-fa-crash-log.sh"
 
       - name: Upload the full fa session trace
         # AFTER the memory-persist push: the artifact must include the final
@@ -798,9 +810,11 @@ jobs:
           SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
           ANCHOR: ${{ needs.guard.outputs.anchor }}
           CONFIG: ${{ needs.guard.outputs.config }}
-        # Body: scripts/persist-fa-session.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
-        # delivered via the factory-kit fetch at the invocation ref).
-        run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/persist-fa-session.sh"
+        # Engine-side since dmtools-agents#943: the fa-session persist to its
+        # git branch is session-lifecycle logic and ships in the factory-setup
+        # zip (pack agents-rel-20261016-215704+). The awf copy is gone — this
+        # is the only source now (ordered flip: pack landed first).
+        run: bash -e "${RUNNER_TEMP}/factory-setup/scripts/persist-fa-session.sh"
 
       - name: Hand the issue to the reviewer (dev runs only)
         # Remove-then-add agent:review so the `labeled` event always fires
