@@ -229,31 +229,15 @@ jobs:
       - name: Checkout target repository
         uses: actions/checkout@v7
         with:
-          # epam/dmtools-dart#412 removed the agents submodule (integration
-          # tests fetch dmtools-agents@main instead) — a submodules: checkout
-          # now dies with `fatal: No url found for submodule path 'agents'`
-          # on every post-412 head. The step below restores the tree both
-          # ways: submodule when the target still carries .gitmodules,
-          # depth-1 main clone otherwise (tool/fetch_agents.sh, dart#412).
+          # NO submodules and NO agents fetch here: the factory works with
+          # RELEASES (factory kit + per-agent packs), it never materializes
+          # the dmtools-agents tree in leg worktrees — that tree is the
+          # integration-TEST target's own business (epam/dmtools-dart#412
+          # fetches dmtools-agents@main in its own quality.yml).
+          # Materializing agents/ here produced embedded-repo gitlinks
+          # (dart ai/gh-379, fa ai/gh-1646/1643, 2026-10-16).
           persist-credentials: false
 
-      - name: Fetch agents tree (submodule when present, else main)
-        run: |
-          if [ -f .gitmodules ] && grep -q 'path = agents' .gitmodules; then
-            git submodule update --init --depth 1 agents
-          elif [ -f tool/fetch_agents.sh ]; then
-            bash tool/fetch_agents.sh
-          else
-            git clone --depth 1 https://github.com/IstiN/dmtools-agents agents
-          fi
-          # The fetched agents/ is an embedded git repo. If the leg session
-          # runs `git add .`, git records it as a GITLINK (160000) — and
-          # every later checkout of that branch dies with 'fatal: No url
-          # found for submodule path agents in .gitmodules' (live:
-          # dart ai/gh-379 @1a4feffb, fa ai/gh-1646 @4e2b9ea, 2026-10-16).
-          # Legs only READ the tree — drop its .git and make git ignore it.
-          rm -rf agents/.git
-          git check-ignore -q agents || printf 'agents/\n' >> .gitignore
 
       - name: Resolve factory ref (self-pin)
         # github.workflow_ref = "<owner>/<repo>/.github/workflows/factory-teammate.yml@<ref>"
