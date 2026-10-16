@@ -82,14 +82,6 @@ on:
         description: 'Why this dispatch (audit trail, shown in logs)'
         required: false
         type: string
-      factory_ref:
-        # TEMPORARY no-op (2026-10-16 incident: legs startup_fail while
-        # callers still send it — fa wrapper fix in flight, agents done in
-        # #931). Remove AGAIN only after EVERY caller stops passing it.
-        description: 'Deprecated, unread no-op. Do not use.'
-        required: false
-        default: ''
-        type: string
       # Optional agent-work toolchains (salvaged from #35): "" (default)
       # installs NOTHING — explicit opt-in per caller. The dmtools engine
       # and its dart runtime are installed by install-dmtools-cli.sh and
