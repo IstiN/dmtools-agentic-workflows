@@ -61,7 +61,7 @@ on:
       runner:
         description: 'Runner label (self-hosted pools must be visible to the CALLING org)'
         type: string
-        default: 'ubuntu-24.04'
+        default: 'ubuntu-slim'
       issue:
         description: 'Issue number (string: number-typed reusable inputs cannot take expressions). Empty when pr is given (PR-anchored run, #687).'
         required: false
@@ -143,7 +143,7 @@ permissions:
 
 jobs:
   guard:
-    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
+    runs-on: ${{ inputs.runner || 'ubuntu-slim' }}
     outputs:
       run: ${{ steps.check.outputs.run }}
       runner: ${{ steps.check.outputs.runner }}
@@ -213,7 +213,7 @@ jobs:
   teammate:
     needs: guard
     if: needs.guard.outputs.run == 'true'
-    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
+    runs-on: ${{ inputs.runner || 'ubuntu-slim' }}
     # A real fix is a 40-80 minute agent session (gh-623 burned a full RCA +
     # TDD cycle at exactly 61 minutes and the job was killed mid-work); dev
     # legs over Flutter sources run the analyzer + full flutter test suite

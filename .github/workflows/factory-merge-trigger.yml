@@ -48,7 +48,7 @@ on:
       runner:
         description: 'Runs-on label for the merge job'
         type: string
-        default: 'ubuntu-latest'
+        default: 'ubuntu-slim'
       remove_pr_label:
         description: 'Also remove pr_approved from the merged PR (dmd convention)'
         type: boolean
