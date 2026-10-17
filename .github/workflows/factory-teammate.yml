@@ -139,6 +139,12 @@ on:
       CUSTOM_PROVIDER_KEY3:
         description: 'Generic provider-key slot 3 — see CUSTOM_PROVIDER_KEY1.'
         required: false
+      APP_ID:
+        description: 'Optional GitHub App id (awf#52). With APP_PRIVATE_KEY set, every GitHub API call and git push in the leg rides a per-job App installation token (10x the PAT rate budget — the ai-teammate PAT exhausted its 5000 req/h and killed SM ticks, dmtools-agents run 39034080472) instead of SOURCE_GITHUB_TOKEN. Absent => PAT, byte-identical to the pre-App behavior.'
+        required: false
+      APP_PRIVATE_KEY:
+        description: 'Private key (PEM) of the APP_ID GitHub App.'
+        required: false
 
 # NOTE: no `concurrency` here — the caller stub owns the per-issue group.
 # A reusable workflow with the SAME group as its caller deadlocks: the caller
@@ -171,6 +177,34 @@ jobs:
           # history walks. fetch-depth 0 cloned the FULL history here
           # (~1 min on fa, every leg) for nothing.
           fetch-depth: 1
+
+      # GitHub App auth (awf#52): with APP_ID + APP_PRIVATE_KEY secrets,
+      # every GitHub API call / git push in this job rides a per-job App
+      # installation token instead of the PAT. Minted HERE, in each
+      # consuming job, because GitHub strips secret-bearing job outputs
+      # (tokens cannot cross jobs). Absent APP_* secrets =>
+      # SOURCE_GITHUB_TOKEN / github.token exactly as before.
+      - name: Resolve GitHub auth (App -> PAT)
+        id: app
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+        run: |
+          if [ -n "$APP_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "auth: app"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "auth: pat"
+          fi
+
+      - name: Mint GitHub App installation token
+        id: app-token
+        if: steps.app.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Set up Java for agent work
         if: inputs.java-version != ''
         uses: actions/setup-java@v5
@@ -211,7 +245,7 @@ jobs:
       - name: Decide whether this event is for the agent
         id: check
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           NUMBER: ${{ inputs.issue }}
           PR_NUMBER: ${{ inputs.pr }}
           # Event context rides through from the caller (issues events) —
@@ -270,6 +304,33 @@ jobs:
           persist-credentials: false
 
 
+      # GitHub App auth (awf#52): with APP_ID + APP_PRIVATE_KEY secrets,
+      # every GitHub API call / git push in this job rides a per-job App
+      # installation token instead of the PAT. Minted HERE, in each
+      # consuming job, because GitHub strips secret-bearing job outputs
+      # (tokens cannot cross jobs). Absent APP_* secrets =>
+      # SOURCE_GITHUB_TOKEN / github.token exactly as before.
+      - name: Resolve GitHub auth (App -> PAT)
+        id: app
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+        run: |
+          if [ -n "$APP_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "auth: app"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "auth: pat"
+          fi
+
+      - name: Mint GitHub App installation token
+        id: app-token
+        if: steps.app.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: "Fetch factory kit (this repo @ invocation ref — immutable)"
         # Trust-boundary scripts (git push guard, source PAT credentials)
         # ride the SAME immutable ref the caller invoked this workflow at
@@ -318,7 +379,7 @@ jobs:
         # own factory-probe, forks pinning local trees) keep their copies.
         # FACTORY_ROOT carries the winner for every later step.
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           PACK_TAG: ${{ vars.DMTOOLS_PACK_REGISTRY }}
           # awf#25: AGENTS_VERSION is the documented pin knob (same
           # semantics as factory-sm.yml) — when pinned to a concrete
@@ -383,7 +444,7 @@ jobs:
         # version-locked install.sh URL keeps working; owner mandate
         # 2026-10-01: machine legs always track the latest CLI/agents.
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         # Body: scripts/resolve-dmtools-version.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
         # delivered via the factory-kit fetch at the invocation ref).
         run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/resolve-dmtools-version.sh"
@@ -399,7 +460,7 @@ jobs:
         # downloads hit GitHub edge caches that served stale 404s for hours
         # after a re-cut release (observed 2026-09-12).
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         # Body: scripts/install-fa-cli.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
         # delivered via the factory-kit fetch at the invocation ref).
         run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/install-fa-cli.sh"
@@ -442,7 +503,7 @@ jobs:
         # credential that wins for github.com pushes (all logic in the
         # shared installer — one copy serves every push path in the job).
         env:
-          SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          SOURCE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
         run: bash "${RUNNER_TEMP}/factory-kit/kit/install-source-git-credentials.sh" 2>/dev/null \
             || bash "${FACTORY_ROOT}/setup/install-source-git-credentials.sh"
 
@@ -462,7 +523,7 @@ jobs:
         #                        masked, and the helper's stderr line confirms
         #                        SOURCE_GITHUB_TOKEN served the credential
         env:
-          SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          SOURCE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
         # Body: scripts/trace-git-credentials.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
         # delivered via the factory-kit fetch at the invocation ref).
         run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/trace-git-credentials.sh"
@@ -478,7 +539,7 @@ jobs:
       - name: Write the issue into the agent input folder
         if: inputs.pr == ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           NUMBER: ${{ inputs.issue }}
         # Body: scripts/write-input-issue.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
         # delivered via the factory-kit fetch at the invocation ref).
@@ -490,7 +551,7 @@ jobs:
         # shape so hydration paths stay uniform.
         if: inputs.pr != ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           PR_NUMBER: ${{ inputs.pr }}
         # Body: scripts/write-input-pr.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
         # delivered via the factory-kit fetch at the invocation ref).
@@ -504,7 +565,7 @@ jobs:
         # PR-anchored runs skip it: no issue body to carry the task list.
         if: inputs.pr == ''
         env:
-          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN || github.token }}
           NUMBER: ${{ inputs.issue }}
           JOB_LEG: ${{ needs.guard.outputs.kind }}
           RUNNER: ${{ needs.guard.outputs.runner }}
@@ -553,7 +614,7 @@ jobs:
           AI_TEAMMATE_CONCURRENCY_KEY: ${{ needs.guard.outputs.anchor }}
           ZAI_CODE_KEY: ${{ secrets.ZAI_CODE_KEY }}
           KIMI_REVIEW_KEY: ${{ secrets.KIMI_REVIEW_KEY }}
-          SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          SOURCE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
           # Agent-pack registry base (dm.ai #579): runners may parent packs
           # by REGISTRY ref (`pr_review@latest`) — the resolver reads the
           # releases base (incl. catalog.json) from this env. Callers set
@@ -563,7 +624,7 @@ jobs:
           DMTOOLS_PACK_REGISTRY: ${{ vars.DMTOOLS_PACK_REGISTRY }}
           # gh operations inside the session must act AS the SOURCE account:
           # events created with GITHUB_TOKEN do not trigger workflows.
-          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN || github.token }}
         run: |
           # awf#25 pin parity: when the setup resolved a concrete
           # agents-rel-* tag, the runtime registry base must point at
@@ -643,7 +704,7 @@ jobs:
         # the cost happened even when the agent run above failed/timed out.
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN || github.token }}
           REPO: ${{ github.repository }}
           ANCHOR: ${{ needs.guard.outputs.anchor }}
           KIND: ${{ needs.guard.outputs.kind }}
@@ -663,7 +724,7 @@ jobs:
         # PR-anchored runs skip it (no issue task list).
         if: always() && inputs.pr == ''
         env:
-          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN || github.token }}
           NUMBER: ${{ inputs.issue }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           JOB_RESULT: ${{ job.status }}
@@ -691,7 +752,7 @@ jobs:
         # needs rework. A PAT is REQUIRED for labeling (mute GITHUB_TOKEN).
         if: needs.guard.outputs.kind == 'review' && inputs.pr == ''
         env:
-          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
           NUMBER: ${{ inputs.issue }}
           RUN_OUTPUT: .dmtools/run-output.txt
           MACHINE_AUTHOR: ${{ inputs.machine-author }}
@@ -707,7 +768,7 @@ jobs:
         # completion (removing a label fires no `labeled` event).
         if: always() && needs.guard.outputs.kind == 'review' && inputs.pr == ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           NUMBER: ${{ inputs.issue }}
         # Engine-side since dmtools-agents#938: the review-cycle close is SM
         # cycle logic and ships in the factory-setup zip (pack
@@ -721,7 +782,7 @@ jobs:
         # PR-anchored rework the label lives on the PR, not on an issue.
         if: always() && contains(needs.guard.outputs.runner, 'rework')
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           NUMBER: ${{ inputs.issue }}
           PR_NUMBER: ${{ inputs.pr }}
         # Engine-side since dmtools-agents#938: the rework-cycle close is SM
@@ -735,8 +796,8 @@ jobs:
         # accumulates in the repository. Best-effort on protected branches.
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          SOURCE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
         # Engine-side since dmtools-agents#943: the fa memory persist is
         # session-lifecycle logic and ships in the factory-setup zip (pack
         # agents-rel-20261016-215704+). The awf copy is gone — this is the
@@ -764,7 +825,7 @@ jobs:
         if: always() && (steps.run_agent.outcome == 'failure' || steps.run_agent.outcome == 'cancelled')
         env:
           FA_SESS_BRANCH: fa-sess/${{ needs.guard.outputs.anchor }}
-          SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          SOURCE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
           AGENT_OUTCOME: ${{ steps.run_agent.outcome }}
         # Engine-side since dmtools-agents#943: the poisoned-session quarantine
         # is session-lifecycle logic and ships in the factory-setup zip (pack
@@ -807,7 +868,7 @@ jobs:
         if: always()
         env:
           FA_SESS_BRANCH: fa-sess/${{ needs.guard.outputs.anchor }}
-          SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          SOURCE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
           ANCHOR: ${{ needs.guard.outputs.anchor }}
           CONFIG: ${{ needs.guard.outputs.config }}
         # Engine-side since dmtools-agents#943: the fa-session persist to its
@@ -822,7 +883,7 @@ jobs:
         # goes too — the guard routes on it with priority over review.
         if: needs.guard.outputs.kind == 'dev' && inputs.pr == ''
         env:
-          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
           NUMBER: ${{ inputs.issue }}
         # Engine-side since dmtools-agents#940: the issue-to-reviewer hand-off
         # is SM cycle logic and ships in the factory-setup zip (pack
@@ -833,7 +894,7 @@ jobs:
       - name: Link the run back to the issue
         if: always() && inputs.pr == ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           NUMBER: ${{ inputs.issue }}
           OUTCOME: ${{ job.status }}
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

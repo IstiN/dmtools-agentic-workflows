@@ -99,6 +99,12 @@ on:
       SILENT_GH_TOKEN:
         description: "Optional dedicated silent-update token; the silent-token input wins when both are set."
         required: false
+      APP_ID:
+        description: 'Optional GitHub App id (awf#52). With APP_PRIVATE_KEY set, the tick rides a per-job App installation token (10x the PAT rate budget) instead of SOURCE_GITHUB_TOKEN. Absent => PAT, byte-identical to the pre-App behavior. NEVER used for SILENT_GH_TOKEN — silent update-branch pushes must keep a token that fires no events.'
+        required: false
+      APP_PRIVATE_KEY:
+        description: 'Private key (PEM) of the APP_ID GitHub App.'
+        required: false
 
 permissions:
   contents: write         # checkout + silent update-branch pushes
@@ -127,13 +133,40 @@ jobs:
           ref: ${{ github.ref }}
           persist-credentials: false
 
+      # GitHub App auth (awf#52): with APP_ID + APP_PRIVATE_KEY secrets,
+      # the tick rides a per-job App installation token instead of the PAT
+      # (the ai-teammate PAT's 5000 req/h budget was exhausted by SM ticks —
+      # dmtools-agents run 39034080472). Minted HERE because GitHub strips
+      # secret-bearing job outputs (tokens cannot cross jobs). Absent APP_*
+      # secrets => SOURCE_GITHUB_TOKEN (PAT), byte-identical to today.
+      - name: Resolve GitHub auth (App -> PAT)
+        id: app
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+        run: |
+          if [ -n "$APP_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "auth: app"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "auth: pat"
+          fi
+
+      - name: Mint GitHub App installation token
+        id: app-token
+        if: steps.app.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Resolve versions (agents release + dmtools CLI)
         # 'latest' resolves to the newest PUBLISHED release tag at tick
         # time; an explicit tag (e.g. vars.AGENTS_VERSION=agents-rel-…)
         # pins the tick reproducibly. Fails loudly when the tag does not
         # exist (gh api exits non-zero → red tick, no silent fallback).
         env:
-          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
         run: |
           resolve_tag() {
             local repo="$1" knob="$2"
@@ -169,12 +202,14 @@ jobs:
         # configLoader discovers .dmtools/config.js exactly like the old
         # submodule checkout did (rule 4 of its discovery order).
         env:
-          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          # App installation token (awf#52, minted above) wins; absent APP_*
+          # secrets => SOURCE_GITHUB_TOKEN (PAT), exactly as before.
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           # dmtools reads SOURCE_GITHUB_TOKEN (env-parity with Java); without
           # it the GitHub integration counts as unconfigured and the JS
           # runtime does not expose github_* globals at all.
-          SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          SOURCE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
           # github.token does NOT cross the reusable-call boundary through
           # inputs or secrets (live-verified BOTH arrive empty) — but a
           # called workflow can reference its OWN github.token directly:

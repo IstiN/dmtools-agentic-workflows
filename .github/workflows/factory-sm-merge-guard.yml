@@ -32,6 +32,13 @@ on:
         description: 'How far back dispatched validation runs certify a push'
         type: number
         default: 24
+    secrets:
+      APP_ID:
+        description: 'Optional GitHub App id (awf#52). With APP_PRIVATE_KEY set, guard API calls ride a per-job App installation token instead of github.token. Absent => github.token, byte-identical to today.'
+        required: false
+      APP_PRIVATE_KEY:
+        description: 'Private key (PEM) of the APP_ID GitHub App.'
+        required: false
 
 permissions:
   contents: read
@@ -67,9 +74,33 @@ jobs:
             "https://raw.githubusercontent.com/IstiN/dmtools-agentic-workflows/main/scripts/sm_merge_guard.py" \
             -o "$RUNNER_TEMP/sm_merge_guard.py"
 
+      # GitHub App auth (awf#52): with APP_ID + APP_PRIVATE_KEY secrets the
+      # guard's gh calls ride a per-job App installation token; absent them
+      # github.token is used, byte-identical to today.
+      - name: Resolve GitHub auth (App -> github.token)
+        id: app
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+        run: |
+          if [ -n "$APP_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "auth: app"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "auth: pat"
+          fi
+
+      - name: Mint GitHub App installation token
+        id: app-token
+        if: steps.app.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Assert a dispatched validation covers this tree
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           REPO: ${{ github.repository }}
           CI_WORKFLOW: ${{ inputs.ci_workflow }}
           WINDOW_HOURS: ${{ inputs.window_hours }}
