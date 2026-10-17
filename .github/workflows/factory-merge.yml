@@ -67,6 +67,18 @@ on:
       SOURCE_GITHUB_TOKEN:
         description: 'PAT with repo scope — GitHub API access for the merge bot (labels, PR state, checks, merge).'
         required: true
+      APP_ID:
+        description: 'Optional GitHub App id (awf#52). With APP_PRIVATE_KEY set, every GitHub API call in the run rides a per-job App installation token (10x the PAT rate budget) instead of SOURCE_GITHUB_TOKEN. Absent => PAT, byte-identical to the pre-App behavior.'
+        required: false
+      APP_PRIVATE_KEY:
+        description: 'Private key (PEM) of the APP_ID GitHub App.'
+        required: false
+      MERGE_APP_ID:
+        description: 'DEPRECATED pre-awf#52 alias of APP_ID (#46 merge identity) — still honored.'
+        required: false
+      MERGE_APP_PRIVATE_KEY:
+        description: 'DEPRECATED pre-awf#52 alias of APP_PRIVATE_KEY — still honored.'
+        required: false
 
 # NOTE: NO concurrency block here — deliberately. A called workflow's
 # concurrency NEVER applies (GitHub ignores it; only the caller's does),
@@ -96,9 +108,37 @@ jobs:
         with:
           persist-credentials: false
 
+      # GitHub App auth (awf#52): with APP_ID + APP_PRIVATE_KEY secrets,
+      # every GitHub API call below rides a per-job App installation token
+      # instead of the PAT. Minted HERE, in the consuming job, because
+      # GitHub strips secret-bearing job outputs (tokens cannot cross
+      # jobs). Absent APP_* secrets => SOURCE_GITHUB_TOKEN (PAT),
+      # byte-identical to the pre-App behavior. MERGE_APP_* stay honored
+      # as the pre-awf#52 names (#46 merge identity).
+      - name: Resolve GitHub auth (App -> PAT)
+        id: app
+        env:
+          APP_ID: ${{ secrets.APP_ID || secrets.MERGE_APP_ID }}
+        run: |
+          if [ -n "$APP_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "auth: app"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "auth: pat"
+          fi
+
+      - name: Mint GitHub App installation token
+        id: app-token
+        if: steps.app.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID || secrets.MERGE_APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY || secrets.MERGE_APP_PRIVATE_KEY }}
+
       - name: Resolve versions (agents release + dmtools CLI)
         env:
-          GH_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
         run: |
           resolve_tag() {
             local repo="$1" knob="$2"
@@ -122,27 +162,16 @@ jobs:
           bash /tmp/dmtools-install.sh "${DMTOOLS_TAG}"
           echo "$HOME/.dmtools/bin" >> "$GITHUB_PATH"
 
-      - name: Detect merge App
-        id: app
-        env:
-          APP_ID: ${{ secrets.MERGE_APP_ID }}
-        run: echo "enabled=$([ -n "$APP_ID" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-      - name: Mint merge App token
-        id: app-token
-        if: steps.app.outputs.enabled == 'true'
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.MERGE_APP_ID }}
-          private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
       - name: Run the merge bot
         # Runs as a VERSIONED AGENT PACK (machine_merge@latest): the pack
         # carries mergeBot.js + its require() closure, sha256-verified
         # against the release catalog. CWD = target repo root (config
         # discovery parity with the old submodule checkout).
         env:
-          # Optional merge identity: a GitHub App token minted per run
-          # (expires with the job). Absent MERGE_APP_ID secret =>
-          # SOURCE_GITHUB_TOKEN (PAT) as before. Salvaged from #35.
+          # App installation token (awf#52, minted above — expires with
+          # the job) wins; absent APP_*/MERGE_APP_* secrets =>
+          # SOURCE_GITHUB_TOKEN (PAT) as before. Merge identity salvaged
+          # from #35/#46.
           GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
           SOURCE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
         run: |

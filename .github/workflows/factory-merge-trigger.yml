@@ -61,6 +61,16 @@ on:
         description: 'Also link via branch names like gh-0*NN'
         type: boolean
         default: true
+    secrets:
+      APP_ID:
+        description: 'Optional GitHub App id (awf#52). With APP_PRIVATE_KEY set, the sweep rides a per-job App installation token instead of PAT_TOKEN/github.token. Absent => byte-identical to the pre-App behavior.'
+        required: false
+      APP_PRIVATE_KEY:
+        description: 'Private key (PEM) of the APP_ID GitHub App.'
+        required: false
+      PAT_TOKEN:
+        description: 'Optional PAT (repo scope) — wins over github.token when no App secrets are set.'
+        required: false
 
 permissions:
   contents: write
@@ -101,10 +111,36 @@ jobs:
             echo "::notice::merge-trigger scaffold is wired but disabled — set the MERGE_TRIGGER_ENABLED repo variable to true (after branch protection + required checks are in place)."
           fi
 
+      # GitHub App auth (awf#52): with APP_ID + APP_PRIVATE_KEY secrets the
+      # sweep rides a per-job App installation token; absent them the
+      # PAT_TOKEN -> github.token chain below is byte-identical to today.
+      # Minted in-job: GitHub strips secret-bearing job outputs.
+      - name: Resolve GitHub auth (App -> PAT -> github.token)
+        id: app
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+        run: |
+          if [ -n "$APP_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "auth: app"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "auth: pat"
+          fi
+
+      - name: Mint GitHub App installation token
+        id: app-token
+        if: steps.gate.outputs.enabled == 'true' && steps.app.outputs.enabled == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Resolve versions (agents release + dmtools CLI)
         if: steps.gate.outputs.enabled == 'true'
         env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PAT_TOKEN || github.token }}
         run: |
           resolve_tag() {
             local repo="$1" knob="$2"
@@ -137,9 +173,9 @@ jobs:
         # GitHub API via the github_* tool bridge; the workflow inputs map
         # into the jobParams override.
         env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
-          SOURCE_GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PAT_TOKEN || github.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.PAT_TOKEN || github.token }}
+          SOURCE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.PAT_TOKEN || github.token }}
           CI_RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           export DMTOOLS_PACK_REGISTRY="https://github.com/IstiN/dmtools-agents/releases/download/${AGENTS_TAG}"
