@@ -69,6 +69,11 @@ on:
         description: 'PR number for PR-anchored runs (review leg on PRs born without an issue, #687). Exactly one of issue|pr must be set.'
         required: false
         type: string
+      checkout_ref:
+        description: 'IstiN/dmtools-agents#1096 (gh-1075 fork-PR dispatch): refs/pull/<N>/head to check out instead of the dispatch ref, so a fork leg works the PR head tree. Empty = default checkout (byte-identical).'
+        required: false
+        type: string
+        default: ''
       machine-author:
         description: "Deployment's machine (bot) login (#687): gates rework re-arm in PR-anchored reviews (auto-approve via pr_approved is author-agnostic per the owner rule). Injected as jobParams.machineAuthor — branch-independent (the checked-out PR branch carries no machineAuthor config)."
         required: false
@@ -294,6 +299,9 @@ jobs:
       - name: Checkout target repository
         uses: actions/checkout@v7
         with:
+          # dmtools-agents#1096: fork-PR legs check out refs/pull/<N>/head;
+          # empty resolves the default ref exactly as before.
+          ref: ${{ inputs.checkout_ref || '' }}
           # NO submodules and NO agents fetch here: the factory works with
           # RELEASES (factory kit + per-agent packs), it never materializes
           # the dmtools-agents tree in leg worktrees — that tree is the
@@ -608,6 +616,9 @@ jobs:
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUNNER: ${{ needs.guard.outputs.runner }}
           AI_AGENT_PROVIDER: fa
+          # dmtools-agents#1096: the rework leg reads the fork pull ref
+          # (js/common/forkCheckout.js envCheckoutRef) — empty for same-repo.
+          CHECKOUT_REF: ${{ inputs.checkout_ref }}
           # AI_TEAMMATE_CONFIG_FILE rides GITHUB_ENV from the resolve step
           # (pack launch.json wins, legacy tree fallback).
           AI_TEAMMATE_DISPLAY_KEY: GH-${{ needs.guard.outputs.anchor }}
