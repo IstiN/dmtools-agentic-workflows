@@ -103,7 +103,21 @@ jobs:
     runs-on: ${{ inputs.runner || 'ubuntu-slim' }}
     timeout-minutes: 5
     steps:
+      # awf#54: fork-PR `pull_request` events run WITHOUT repo secrets —
+      # SOURCE_GITHUB_TOKEN arrives empty and the bot step would fail red on
+      # a PR that the token-carrying base-context legs (workflow_run /
+      # check_run) still handle in base context. Degrade to success+notice.
+      - name: Fork-PR gate (secrets withheld -> skip with notice)
+        id: forkgate
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.pull_request.head.repo.fork }}" = "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::fork PR context — secrets withheld; the workflow_run/check_run legs run in base context and carry the token, the merge is handled there."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Checkout target repository
+        if: steps.forkgate.outputs.skip != 'true'
         uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -116,6 +130,7 @@ jobs:
       # byte-identical to the pre-App behavior. MERGE_APP_* stay honored
       # as the pre-awf#52 names (#46 merge identity).
       - name: Resolve GitHub auth (App -> PAT)
+        if: steps.forkgate.outputs.skip != 'true'
         id: app
         env:
           APP_ID: ${{ secrets.APP_ID || secrets.MERGE_APP_ID }}
@@ -130,13 +145,14 @@ jobs:
 
       - name: Mint GitHub App installation token
         id: app-token
-        if: steps.app.outputs.enabled == 'true'
+        if: steps.forkgate.outputs.skip != 'true' && steps.app.outputs.enabled == 'true'
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ secrets.APP_ID || secrets.MERGE_APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY || secrets.MERGE_APP_PRIVATE_KEY }}
 
       - name: Resolve versions (agents release + dmtools CLI)
+        if: steps.forkgate.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
         run: |
@@ -156,6 +172,7 @@ jobs:
           echo "dmtools CLI release: ${DMTOOLS_TAG} (knob: ${DMTOOLS_VERSION})"
 
       - name: Install dmtools CLI (release bundle)
+        if: steps.forkgate.outputs.skip != 'true'
         run: |
           curl -fsSL "https://github.com/epam/dmtools-dart/releases/download/${DMTOOLS_TAG}/install.sh" \
             -o /tmp/dmtools-install.sh
@@ -163,6 +180,7 @@ jobs:
           echo "$HOME/.dmtools/bin" >> "$GITHUB_PATH"
 
       - name: Run the merge bot
+        if: steps.forkgate.outputs.skip != 'true'
         # Runs as a VERSIONED AGENT PACK (machine_merge@latest): the pack
         # carries mergeBot.js + its require() closure, sha256-verified
         # against the release catalog. CWD = target repo root (config
