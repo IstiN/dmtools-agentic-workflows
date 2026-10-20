@@ -35,6 +35,20 @@
 #   on:
 #     schedule: [{cron: '*/10 * * * *'}]
 #     workflow_dispatch: {inputs: {dryRun: {type: boolean, default: true}}}
+#   permissions:
+#     # A reusable workflow CANNOT grant itself permissions the caller did
+#     # not issue (GitHub hard rule) — the stub must pre-grant everything
+#     # the SM needs:
+#     #   contents: write       checkout + silent update-branch pushes
+#     #   workflows: write      silent updates that carry main's workflow-file
+#     #                         changes are rejected without it (live: fork
+#     #                         PR branches — "refusing to allow a GitHub App
+#     #                         to create or update workflow ... without
+#     #                         workflows permission"). github.token pushes
+#     #                         still fire no events.
+#     #   issues: write         labels + close-issue safety net
+#     #   pull-requests: write  update-branch + merge
+#     #   checks: write         bridge-free validation stamps
 #   jobs:
 #     sm:
 #       uses: IstiN/dmtools-agentic-workflows/.github/workflows/factory-sm.yml@<ref>
