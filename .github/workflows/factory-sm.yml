@@ -40,17 +40,23 @@
 #     # not issue (GitHub hard rule) — the stub must pre-grant everything
 #     # the SM needs:
 #     #   contents: write       checkout + silent update-branch pushes
-#     #   workflows: write      silent updates that carry main's workflow-file
-#     #                         changes are rejected without it (live: fork
-#     #                         PR branches — "refusing to allow a GitHub App
-#     #                         to create or update workflow ... without
-#     #                         workflows permission"). github.token pushes
-#     #                         still fire no events.
 #     #   issues: write         labels + close-issue safety net
 #     #   pull-requests: write  update-branch + merge
 #     #   checks: write         bridge-free validation stamps
+#     # NEVER add `workflows: write` — it is NOT a valid permissions scope
+#     # for GITHUB_TOKEN and makes the workflow file UNPARSEABLE (live
+#     # fah#1717: HTTP 422 "Unexpected value 'workflows'", SM dead until
+#     # reverted). GITHUB_TOKEN can never push workflow-file changes no
+#     # matter what the stub declares.
 #   jobs:
 #     sm:
+#       uses: IstiN/dmtools-agentic-workflows/.github/workflows/factory-sm.yml@<ref>
+#       secrets:
+#         # Silent updates that carry main's workflow-file changes need a
+#         # workflows-capable PAT: pass it here (the factory resolves
+#         # inputs.silent-token || secrets.SILENT_GH_TOKEN || github.token;
+#         # the with-input channel cannot reference secrets — 422).
+#         SILENT_GH_TOKEN: ${{ secrets.PAT_TOKEN }}
 #       uses: IstiN/dmtools-agentic-workflows/.github/workflows/factory-sm.yml@<ref>
 #       with:
 #         dryRun: ${{ github.event.inputs.dryRun || 'false' }}   # STRING —
