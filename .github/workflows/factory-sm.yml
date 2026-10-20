@@ -235,6 +235,10 @@ jobs:
           # called workflow can reference its OWN github.token directly:
           # same repo, same run, pushes with it trigger no workflows.
           SILENT_GH_TOKEN: ${{ inputs.silent-token || secrets.SILENT_GH_TOKEN || github.token }}
+          # Check-run API calls (POST/PATCH /check-runs) require a GitHub App
+          # token (github.token, integration_id 15368) — a PAT in SILENT_GH_TOKEN
+          # gets HTTP 403 "You must authenticate via a GitHub App".
+          CHECKS_GH_TOKEN: ${{ github.token }}
           # Registry base = the resolved agents release's asset URL
           # directory: <base>/catalog.json maps agent→version, packs and
           # their .sha256 sidecars live at <base>/<name>-<version>.zip.
@@ -246,6 +250,9 @@ jobs:
           extra=""
           if [ -n "$SILENT_GH_TOKEN" ]; then
             extra=",\"silentToken\":\"${SILENT_GH_TOKEN}\",\"sourceToken\":\"${SOURCE_GITHUB_TOKEN}\""
+          fi
+          if [ -n "$CHECKS_GH_TOKEN" ]; then
+            extra="${extra},\"checksToken\":\"${CHECKS_GH_TOKEN}\""
           fi
           # #687: machine login is deployment-level (never hardcoded in the
           # agents repo) — jobParams.machineAuthor / config.machineAuthor.
