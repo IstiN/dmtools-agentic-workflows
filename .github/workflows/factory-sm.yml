@@ -35,8 +35,28 @@
 #   on:
 #     schedule: [{cron: '*/10 * * * *'}]
 #     workflow_dispatch: {inputs: {dryRun: {type: boolean, default: true}}}
+#   permissions:
+#     # A reusable workflow CANNOT grant itself permissions the caller did
+#     # not issue (GitHub hard rule) — the stub must pre-grant everything
+#     # the SM needs:
+#     #   contents: write       checkout + silent update-branch pushes
+#     #   issues: write         labels + close-issue safety net
+#     #   pull-requests: write  update-branch + merge
+#     #   checks: write         bridge-free validation stamps
+#     # NEVER add `workflows: write` — it is NOT a valid permissions scope
+#     # for GITHUB_TOKEN and makes the workflow file UNPARSEABLE (live
+#     # fah#1717: HTTP 422 "Unexpected value 'workflows'", SM dead until
+#     # reverted). GITHUB_TOKEN can never push workflow-file changes no
+#     # matter what the stub declares.
 #   jobs:
 #     sm:
+#       uses: IstiN/dmtools-agentic-workflows/.github/workflows/factory-sm.yml@<ref>
+#       secrets:
+#         # Silent updates that carry main's workflow-file changes need a
+#         # workflows-capable PAT: pass it here (the factory resolves
+#         # inputs.silent-token || secrets.SILENT_GH_TOKEN || github.token;
+#         # the with-input channel cannot reference secrets — 422).
+#         SILENT_GH_TOKEN: ${{ secrets.PAT_TOKEN }}
 #       uses: IstiN/dmtools-agentic-workflows/.github/workflows/factory-sm.yml@<ref>
 #       with:
 #         dryRun: ${{ github.event.inputs.dryRun || 'false' }}   # STRING —
