@@ -24,6 +24,11 @@ name: Factory SM merge guard
 on:
   workflow_call:
     inputs:
+      runner:
+        description: 'Runner label for the guard job (e.g. ubuntu-slim, ubuntu-latest, or custom self-hosted label)'
+        required: false
+        type: string
+        default: 'ubuntu-slim'
       ci_workflow:
         description: 'File name of the validation CI workflow the SM dispatches (ci.yml, quality.yml, ...)'
         type: string
@@ -46,7 +51,7 @@ permissions:
 jobs:
   guard:
     name: Validate the pushed tree was SM-validated
-    runs-on: ubuntu-slim
+    runs-on: ${{ inputs.runner || 'ubuntu-slim' }}
     timeout-minutes: 5
     permissions:
       contents: read

@@ -31,6 +31,11 @@ run-name: '🥁 kicker ${{ github.event_name }} ${{ github.ref_name }}'
 on:
   workflow_call:
     inputs:
+      runner:
+        description: 'Runner label for the kicker jobs (e.g. ubuntu-slim, ubuntu-latest, or custom self-hosted label)'
+        required: false
+        type: string
+        default: 'ubuntu-slim'
       sm_workflow:
         description: 'File name of the Machine SM workflow in the caller repo'
         type: string
@@ -56,6 +61,10 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      runner:
+        description: 'Runner label for the kicker jobs'
+        type: string
+        default: 'ubuntu-slim'
       sm_workflow:
         description: 'SM workflow file'
         type: string
@@ -119,7 +128,7 @@ env:
 
 jobs:
   sm-liveness:
-    runs-on: ubuntu-slim
+    runs-on: ${{ inputs.runner || 'ubuntu-slim' }}
     steps:
       # GitHub App auth (awf#52): with APP_ID + APP_PRIVATE_KEY secrets the
       # job's gh calls ride a per-job App installation token; absent them
@@ -165,7 +174,7 @@ jobs:
           fi
 
   head-completeness:
-    runs-on: ubuntu-slim
+    runs-on: ${{ inputs.runner || 'ubuntu-slim' }}
     steps:
       # GitHub App auth (awf#52): with APP_ID + APP_PRIVATE_KEY secrets the
       # job's gh calls ride a per-job App installation token; absent them
