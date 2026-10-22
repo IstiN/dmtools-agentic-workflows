@@ -150,6 +150,12 @@ on:
       APP_PRIVATE_KEY:
         description: 'Private key (PEM) of the APP_ID GitHub App.'
         required: false
+      ENV_VAR_DEV_QUEUE:
+        description: 'FA_PROVIDERS_QUEUE JSON for dev/rework runners (fa-bug-dev, fa-story-dev, fa-rework); may also be passed via vars.ENV_VAR_DEV_QUEUE.'
+        required: false
+      ENV_VAR_REVIEW_QUEUE:
+        description: 'FA_PROVIDERS_QUEUE JSON for review runner (fa-review); may also be passed via vars.ENV_VAR_REVIEW_QUEUE.'
+        required: false
 
 # NOTE: no `concurrency` here — the caller stub owns the per-issue group.
 # A reusable workflow with the SAME group as its caller deadlocks: the caller
@@ -625,6 +631,8 @@ jobs:
           AI_TEAMMATE_CONCURRENCY_KEY: ${{ needs.guard.outputs.anchor }}
           ZAI_CODE_KEY: ${{ secrets.ZAI_CODE_KEY }}
           KIMI_REVIEW_KEY: ${{ secrets.KIMI_REVIEW_KEY }}
+          ENV_VAR_DEV_QUEUE: ${{ secrets.ENV_VAR_DEV_QUEUE || vars.ENV_VAR_DEV_QUEUE }}
+          ENV_VAR_REVIEW_QUEUE: ${{ secrets.ENV_VAR_REVIEW_QUEUE || vars.ENV_VAR_REVIEW_QUEUE }}
           SOURCE_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
           # Agent-pack registry base (dm.ai #579): runners may parent packs
           # by REGISTRY ref (`pr_review@latest`) — the resolver reads the
