@@ -457,7 +457,7 @@ run_fa_turn() {
 
     case "${prov}" in
       kimi)
-        export FA_PROVIDER_TYPE="openai-completions"
+        export FA_PROVIDER_TYPE="kimi"
         export FA_PROVIDER_CONFIG="$(jq -nc \
           --arg base "${base_url:-https://api.kimi.com/coding/v1}" \
           --arg model "${mod:-kimi-for-coding}" \
@@ -485,14 +485,14 @@ run_fa_turn() {
           '{baseUrl: $base, model: $model, apiKeyEnvVar: "GEMINI_API_KEY", input: ["text", "image"]}')"
         ;;
       openrouter)
-        export FA_PROVIDER_TYPE="openai-completions"
+        export FA_PROVIDER_TYPE="openrouter"
         export FA_PROVIDER_CONFIG="$(jq -nc \
           --arg base "${base_url:-https://openrouter.ai/api/v1}" \
           --arg model "${mod:-anthropic/claude-sonnet-4}" \
           '{baseUrl: $base, model: $model, apiKeyEnvVar: "OPENROUTER_API_KEY", input: ["text", "image"]}')"
         ;;
       openai|openai-completions)
-        export FA_PROVIDER_TYPE="openai-completions"
+        export FA_PROVIDER_TYPE="openai"
         export FA_PROVIDER_CONFIG="$(jq -nc \
           --arg base "${base_url:-https://api.openai.com/v1}" \
           --arg model "${mod:-gpt-4o}" \
