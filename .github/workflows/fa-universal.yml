@@ -142,20 +142,6 @@ jobs:
     runs-on: ${{ inputs.runner || 'ubuntu-slim' }}
     timeout-minutes: 60
     steps:
-      - name: Checkout workflow kit
-        uses: actions/checkout@v5
-        with:
-          repository: IstiN/dmtools-agentic-workflows
-          persist-credentials: false
-
-      - name: Move workflow kit to RUNNER_TEMP
-        run: |
-          rm -rf "${RUNNER_TEMP}/awf-kit"
-          mkdir -p "${RUNNER_TEMP}/awf-kit"
-          cp -R scripts kit "${RUNNER_TEMP}/awf-kit/"
-          # Clean workspace so fa-universal-runner.sh can clone/checkout target_repo cleanly
-          find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-
       - name: Cache fa + dmtools-dart binaries
         uses: actions/cache@v4
         with:
@@ -167,6 +153,8 @@ jobs:
 
       - name: Run Universal FA Agent
         env:
+          # Workflow kit reference (supports immutable SHA/branch from github.workflow_ref)
+          AWF_WORKFLOW_REF: ${{ github.workflow_ref }}
           # Inputs (supports workflow_dispatch, workflow_call, repository_dispatch, and direct issue_comment events)
           INPUT_PROVIDER: ${{ inputs.provider || github.event.client_payload.provider || 'github' }}
           INPUT_TARGET_REPO: ${{ inputs.target_repo || github.event.client_payload.target_repo || github.repository }}
@@ -229,4 +217,22 @@ jobs:
           FA_DAP_INVITE: ${{ secrets.FA_DAP_INVITE }}
           FA_NETWORK_ENROLL_URL: ${{ secrets.FA_NETWORK_ENROLL_URL || vars.FA_NETWORK_ENROLL_URL }}
           FA_NETWORK_TOKEN: ${{ secrets.FA_NETWORK_TOKEN }}
-        run: bash -e "${RUNNER_TEMP}/awf-kit/scripts/fa-universal-runner.sh"
+        run: |
+          KIT_DIR="${RUNNER_TEMP}/awf-kit"
+          mkdir -p "${KIT_DIR}/scripts" "${KIT_DIR}/kit"
+          REF="main"
+          case "${AWF_WORKFLOW_REF:-}" in
+            *dmtools-agentic-workflows*@*) REF="${AWF_WORKFLOW_REF##*@}" ; REF="${REF#refs/heads/}" ;;
+          esac
+          RAW_BASE="https://raw.githubusercontent.com/IstiN/dmtools-agentic-workflows/${REF}"
+          curl -fsSL "${RAW_BASE}/scripts/fa-universal-runner.sh" -o "${KIT_DIR}/scripts/fa-universal-runner.sh" &
+          P1=$!
+          curl -fsSL "${RAW_BASE}/scripts/export-provider-key-slots.sh" -o "${KIT_DIR}/scripts/export-provider-key-slots.sh" 2>/dev/null &
+          P2=$!
+          curl -fsSL "${RAW_BASE}/kit/install-source-git-credentials.sh" -o "${KIT_DIR}/kit/install-source-git-credentials.sh" 2>/dev/null &
+          P3=$!
+          wait "${P1}"
+          wait "${P2}" || true
+          wait "${P3}" || true
+          chmod +x "${KIT_DIR}/scripts/fa-universal-runner.sh"
+          exec bash -e "${KIT_DIR}/scripts/fa-universal-runner.sh"

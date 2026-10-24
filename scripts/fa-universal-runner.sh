@@ -108,24 +108,14 @@ mint_github_app_token() {
   printf '%s' "${token}"
 }
 
-APP_TOKEN=""
-if [ "${PROVIDER}" = "github" ] && [ -n "${TARGET_REPO}" ]; then
-  APP_TOKEN="$(mint_github_app_token "${TARGET_REPO}" || true)"
-  if [ -n "${APP_TOKEN}" ]; then
-    echo "✅ Minted GitHub App installation token for ${TARGET_REPO}"
-    echo "::add-mask::${APP_TOKEN}"
-  fi
+# Export paths and start binary downloads IMMEDIATELY (overlapped with GitHub App JWT/token minting!)
+export PATH="${HOME}/.local/bin:${HOME}/.dmtools/bin:${PATH}"
+if [ -n "${GITHUB_PATH:-}" ]; then
+  echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+  echo "${HOME}/.dmtools/bin" >> "${GITHUB_PATH}"
 fi
 
-# Effective GitHub token priority: GitHub App token > SOURCE_GITHUB_TOKEN > PAT_TOKEN > GITHUB_TOKEN
-EFFECTIVE_GH_TOKEN="${APP_TOKEN:-${SOURCE_GITHUB_TOKEN:-${PAT_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}}}"
-if [ -n "${EFFECTIVE_GH_TOKEN}" ]; then
-  export GH_TOKEN="${EFFECTIVE_GH_TOKEN}"
-  export GITHUB_TOKEN="${EFFECTIVE_GH_TOKEN}"
-  export SOURCE_GITHUB_TOKEN="${EFFECTIVE_GH_TOKEN}"
-fi
-
-# ── 3. Fast Parallel Binary Install (`fa` + `dmtools-dart`) ───────────────────
+# ── 3. Fast Parallel Binary Install + Shallow Single-Branch Clone ─────────────
 install_fa_fast() {
   if command -v fa >/dev/null 2>&1; then
     echo "✅ fa already on PATH: $(command -v fa)"
@@ -149,7 +139,6 @@ install_fa_fast() {
     url="https://github.com/IstiN/flutter_agent_harness/releases/download/${ver}/${asset}"
   fi
   if ! curl -fsSL "${url}" -o "${tmp}/${asset}" 2>/dev/null; then
-    # Fallback: resolve newest release tag that carries the asset via gh api
     local tag
     tag="$(gh release list --repo IstiN/flutter_agent_harness --limit 10 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
     if [ -n "${tag}" ]; then
@@ -175,37 +164,119 @@ install_dmtools_fast() {
     echo "✅ dmtools already on PATH: $(command -v dmtools)"
     return 0
   fi
-  local ver="${DMTOOLS_VERSION:-}"
-  export DMTOOLS_INSTALL_DIR="${HOME}/.dmtools"
-  if [ "${ver}" != "latest" ] && [ -n "${ver}" ]; then
-    DMTOOLS_VERSION="${ver}" curl -fsSL "https://github.com/epam/dmtools-dart/releases/download/${ver}/install.sh" \
-      | bash -s -- "${ver}"
+  local os arch asset tmp url src install_bin
+  case "$(uname -s)" in
+    Darwin) os="macos" ;;
+    *)      os="linux" ;;
+  esac
+  case "$(uname -m)" in
+    arm64|aarch64) arch="arm64" ;;
+    *)             arch="x64" ;;
+  esac
+  asset="dmtools-${os}-${arch}.tar.gz"
+  tmp="$(mktemp -d)"
+  local ver="${DMTOOLS_VERSION:-latest}"
+  if [ "${ver}" = "latest" ] || [ -z "${ver}" ]; then
+    url="https://github.com/epam/dmtools-dart/releases/latest/download/${asset}"
   else
-    unset DMTOOLS_VERSION
-    curl -fsSL "https://github.com/epam/dmtools-dart/releases/latest/download/install.sh" \
-      | bash
+    case "${ver}" in v*) ;; *) ver="v${ver}" ;; esac
+    url="https://github.com/epam/dmtools-dart/releases/download/${ver}/${asset}"
   fi
-  echo "✅ dmtools-dart installed: ${HOME}/.dmtools/bin/dmtools"
+  curl -fsSL "${url}" -o "${tmp}/${asset}"
+  tar -xzf "${tmp}/${asset}" -C "${tmp}"
+  src="${tmp}/bundle"
+  [ -d "${src}" ] || src="${tmp}"
+  install_bin="${HOME}/.dmtools/bin"
+  mkdir -p "${install_bin}/native/quickjs"
+  cp "${src}/dmtools" "${install_bin}/dmtools.bin"
+  chmod +x "${install_bin}/dmtools.bin"
+  if [ -f "${src}/native/quickjs/libquickjs_bridge.so" ]; then
+    cp "${src}/native/quickjs/libquickjs_bridge.so" "${install_bin}/native/quickjs/libquickjs_bridge.so"
+  elif [ -f "${src}/native/quickjs/libquickjs_bridge.dylib" ]; then
+    cp "${src}/native/quickjs/libquickjs_bridge.dylib" "${install_bin}/native/quickjs/libquickjs_bridge.dylib"
+  fi
+  cat > "${install_bin}/dmtools" <<'LAUNCHER'
+#!/bin/sh
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -f "$DIR/native/quickjs/libquickjs_bridge.so" ]; then
+  export JSR_QUICKJS_LIB="$DIR/native/quickjs/libquickjs_bridge.so"
+elif [ -f "$DIR/native/quickjs/libquickjs_bridge.dylib" ]; then
+  export JSR_QUICKJS_LIB="$DIR/native/quickjs/libquickjs_bridge.dylib"
+fi
+exec "$DIR/dmtools.bin" "$@"
+LAUNCHER
+  chmod +x "${install_bin}/dmtools"
+  rm -rf "${tmp}"
+  echo "✅ dmtools-dart installed: ${install_bin}/dmtools"
 }
 
-export PATH="${HOME}/.local/bin:${HOME}/.dmtools/bin:${PATH}"
-if [ -n "${GITHUB_PATH:-}" ]; then
-  echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-  echo "${HOME}/.dmtools/bin" >> "${GITHUB_PATH}"
-fi
-
-# Download both native binaries in parallel (~1.5-2s total)
 install_fa_fast &
 PID_FA=$!
 install_dmtools_fast &
 PID_DMT=$!
-wait "${PID_FA}"
-wait "${PID_DMT}"
 
-# ── 4. Export Custom Provider Key Slots & Synthesize dmtools.env ──────────────
+APP_TOKEN=""
+if [ "${PROVIDER}" = "github" ] && [ -n "${TARGET_REPO}" ]; then
+  APP_TOKEN="$(mint_github_app_token "${TARGET_REPO}" || true)"
+  if [ -n "${APP_TOKEN}" ]; then
+    echo "✅ Minted GitHub App installation token for ${TARGET_REPO}"
+    echo "::add-mask::${APP_TOKEN}"
+  fi
+fi
+
+# Effective GitHub token priority: GitHub App token > SOURCE_GITHUB_TOKEN > PAT_TOKEN > GITHUB_TOKEN
+EFFECTIVE_GH_TOKEN="${APP_TOKEN:-${SOURCE_GITHUB_TOKEN:-${PAT_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}}}"
+if [ -n "${EFFECTIVE_GH_TOKEN}" ]; then
+  export GH_TOKEN="${EFFECTIVE_GH_TOKEN}"
+  export GITHUB_TOKEN="${EFFECTIVE_GH_TOKEN}"
+  export SOURCE_GITHUB_TOKEN="${EFFECTIVE_GH_TOKEN}"
+fi
+# Determine workspace before starting parallel jobs so git clone runs concurrently with binary installs
+WORKSPACE="${GITHUB_WORKSPACE:-$(pwd)}"
+NEED_CLONE="false"
+if [ "${PROVIDER}" = "github" ] && [ -n "${TARGET_REPO}" ]; then
+  CURRENT_REPO="$(git -C "${WORKSPACE}" remote get-url origin 2>/dev/null | sed -E 's#.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$#\1#' || true)"
+  if [ "${CURRENT_REPO}" != "${TARGET_REPO}" ]; then
+    if [ -d "${WORKSPACE}" ] && [ -z "$(ls -A "${WORKSPACE}" 2>/dev/null)" ]; then
+      true # reuse empty GITHUB_WORKSPACE
+    else
+      WORKSPACE="$(mktemp -d)/repo"
+    fi
+    NEED_CLONE="true"
+    export GITHUB_WORKSPACE="${WORKSPACE}"
+  fi
+fi
+
+clone_target_repo_fast() {
+  if [ "${NEED_CLONE}" != "true" ]; then
+    return 0
+  fi
+  local branch="${TARGET_BRANCH:-main}"
+  echo "📥 Cloning ${TARGET_REPO} (branch=${branch}, depth=1, single-branch, no-tags)..."
+  local clone_url="https://github.com/${TARGET_REPO}.git"
+  if [ -n "${EFFECTIVE_GH_TOKEN}" ]; then
+    clone_url="https://x-access-token:${EFFECTIVE_GH_TOKEN}@github.com/${TARGET_REPO}.git"
+  fi
+  if ! git clone --quiet --depth 1 --single-branch --no-tags --branch "${branch}" "${clone_url}" "${WORKSPACE}" 2>/dev/null; then
+    git clone --quiet --depth 1 --single-branch --no-tags "${clone_url}" "${WORKSPACE}"
+  fi
+  local sess_branch="fa-sess/${SESSION_KEY}"
+  if git -C "${WORKSPACE}" fetch --quiet --depth 1 --no-tags origin "+refs/heads/${sess_branch}:refs/remotes/origin/${sess_branch}" 2>/dev/null; then
+    if [ -n "$(git -C "${WORKSPACE}" ls-tree --name-only "refs/remotes/origin/${sess_branch}" -- .dmtools/fa-sessions 2>/dev/null)" ]; then
+      git -C "${WORKSPACE}" checkout -q "refs/remotes/origin/${sess_branch}" -- .dmtools/fa-sessions
+      git -C "${WORKSPACE}" restore --staged .dmtools/fa-sessions 2>/dev/null || true
+      echo "→ Restored session from ${sess_branch}"
+    fi
+  fi
+}
+
+# Start shallow single-branch git clone concurrently while binary downloads finish!
+clone_target_repo_fast &
+PID_CLONE=$!
+
+# ── 4. Export Custom Provider Key Slots & Synthesize dmtools.env (runs while downloads finish) ──
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "${SCRIPT_DIR}/export-provider-key-slots.sh" ]; then
-  # If GITHUB_ENV is unset (non-GH runner), point it to a temp file and source it
   if [ -z "${GITHUB_ENV:-}" ]; then
     export GITHUB_ENV="$(mktemp)"
   fi
@@ -225,7 +296,6 @@ if [ -n "${DMTOOLS_ENV:-}" ]; then
   printf '%s\n' "${DMTOOLS_ENV}" >> "${DMTOOLS_ENV_FILE}"
 fi
 
-# Forward standard DMTools integration variables when present in the environment
 for var_name in \
   SOURCE_GITHUB_TOKEN GITHUB_TOKEN GITLAB_TOKEN BITBUCKET_TOKEN \
   JIRA_BASE_PATH JIRA_LOGIN_PASS_TOKEN JIRA_AUTH_TYPE JIRA_EMAIL JIRA_API_TOKEN \
@@ -240,26 +310,11 @@ for var_name in \
   fi
 done
 
-# ── 5. Workspace Checkout (Supports Cross-Repo & App-Token Execution) ─────────
-WORKSPACE="${GITHUB_WORKSPACE:-$(pwd)}"
-if [ "${PROVIDER}" = "github" ] && [ -n "${TARGET_REPO}" ]; then
-  CURRENT_REPO="$(git -C "${WORKSPACE}" remote get-url origin 2>/dev/null | sed -E 's#.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$#\1#' || true)"
-  if [ "${CURRENT_REPO}" != "${TARGET_REPO}" ]; then
-    if [ -d "${WORKSPACE}" ] && [ -z "$(ls -A "${WORKSPACE}" 2>/dev/null)" ]; then
-      true # reuse empty GITHUB_WORKSPACE
-    else
-      WORKSPACE="$(mktemp -d)/repo"
-    fi
-    echo "📥 Cloning target repository ${TARGET_REPO} into ${WORKSPACE}..."
-    if [ -n "${EFFECTIVE_GH_TOKEN}" ]; then
-      git clone --depth 50 "https://x-access-token:${EFFECTIVE_GH_TOKEN}@github.com/${TARGET_REPO}.git" "${WORKSPACE}"
-    else
-      git clone --depth 50 "https://github.com/${TARGET_REPO}.git" "${WORKSPACE}"
-    fi
-    export GITHUB_WORKSPACE="${WORKSPACE}"
-  fi
-fi
+wait "${PID_FA}"
+wait "${PID_DMT}"
+wait "${PID_CLONE}"
 
+# ── 5. Workspace Setup ────────────────────────────────────────────────────────
 cd "${WORKSPACE}"
 
 # Configure git credentials on the target checkout
@@ -288,7 +343,7 @@ fi
 
 if [ -d "${WORKSPACE}/.git" ]; then
   mkdir -p "${WORKSPACE}/.git/info"
-  for pat in "dmtools.env" ".dmtools/" ".dmtools/**" ".fah/bash_jobs/" ".fah/bash_jobs/**" ".fah/.tools/" ".fah/.tools/**"; do
+  for pat in "dmtools.env" ".dmtools/" ".dmtools/**" ".fah/bash_jobs/" ".fah/bash_jobs/**" ".fah/.tools/" ".fah/.tools/**" ".fah/trajectories/" ".fah/trajectories/**" ".fah/sessions/" ".fah/sessions/**"; do
     grep -qxF "${pat}" "${WORKSPACE}/.git/info/exclude" 2>/dev/null || echo "${pat}" >> "${WORKSPACE}/.git/info/exclude"
   done
 fi
@@ -298,7 +353,6 @@ export DAP_AGENT_NAME="${DAP_AGENT_NAME:-${SESSION_KEY}}"
 if [ -n "${FA_DAP_INVITE:-}" ]; then
   fa dap import "${FA_DAP_INVITE}" 2>/dev/null || true
 elif [ -z "${DAP_CLIENT_SECRET:-}" ] && [ -n "${FA_NETWORK_ENROLL_URL:-}" ] && [ -n "${FA_NETWORK_TOKEN:-}" ]; then
-  # Optional auto-enrollment against network.fa1.dev
   ENROLL_RESP="$(curl -fsSL -X POST "${FA_NETWORK_ENROLL_URL}" \
     -H "Authorization: Bearer ${FA_NETWORK_TOKEN}" \
     -H "Content-Type: application/json" \
@@ -315,14 +369,15 @@ SESSION_ROOT="${WORKSPACE}/.dmtools/fa-sessions/${SESSION_KEY}"
 STATE_FILE="${SESSION_ROOT}/.fa-universal-state.json"
 mkdir -p "${SESSION_ROOT}"
 
-if git fetch --depth 1 origin "+refs/heads/${FA_SESS_BRANCH}:refs/remotes/origin/${FA_SESS_BRANCH}" 2>/dev/null; then
-  if [ -n "$(git ls-tree --name-only "refs/remotes/origin/${FA_SESS_BRANCH}" -- .dmtools/fa-sessions 2>/dev/null)" ]; then
-    git checkout "refs/remotes/origin/${FA_SESS_BRANCH}" -- .dmtools/fa-sessions
-    git restore --staged .dmtools/fa-sessions 2>/dev/null || true
-    echo "→ Restored session from ${FA_SESS_BRANCH}"
+if [ "${NEED_CLONE}" != "true" ]; then
+  if git fetch --quiet --depth 1 --no-tags origin "+refs/heads/${FA_SESS_BRANCH}:refs/remotes/origin/${FA_SESS_BRANCH}" 2>/dev/null; then
+    if [ -n "$(git ls-tree --name-only "refs/remotes/origin/${FA_SESS_BRANCH}" -- .dmtools/fa-sessions 2>/dev/null)" ]; then
+      git checkout -q "refs/remotes/origin/${FA_SESS_BRANCH}" -- .dmtools/fa-sessions
+      git restore --staged .dmtools/fa-sessions 2>/dev/null || true
+      echo "→ Restored session from ${FA_SESS_BRANCH}"
+    fi
   fi
 fi
-
 LAST_COMMENT_ID="0"
 if [ -f "${STATE_FILE}" ]; then
   LAST_COMMENT_ID="$(jq -r '.lastProcessedCommentId // "0"' "${STATE_FILE}" 2>/dev/null || echo "0")"
@@ -353,21 +408,27 @@ build_turn_prompt() {
   local new_max_id="${LAST_COMMENT_ID}"
 
   if [ "${PROVIDER}" = "github" ] && [ -n "${TARGET_REPO}" ] && [ -n "${ISSUE_NUMBER}" ]; then
-    local comments_jsonl
-    comments_jsonl="$(fetch_unprocessed_github_comments "${TARGET_REPO}" "${ISSUE_NUMBER}" "${LAST_COMMENT_ID}")"
+    local issue_tmp comments_tmp issue_json title body state is_pr
+    issue_tmp="$(mktemp)"
+    comments_tmp="$(mktemp)"
+    fetch_unprocessed_github_comments "${TARGET_REPO}" "${ISSUE_NUMBER}" "${LAST_COMMENT_ID}" > "${comments_tmp}" &
+    local pid_comm=$!
+    gh api "repos/${TARGET_REPO}/issues/${ISSUE_NUMBER}" 2>/dev/null > "${issue_tmp}" || echo "{}" > "${issue_tmp}" &
+    local pid_iss=$!
+    wait "${pid_comm}" || true
+    wait "${pid_iss}" || true
+    comments_jsonl="$(cat "${comments_tmp}")"
+    issue_json="$(cat "${issue_tmp}")"
+    rm -f "${comments_tmp}" "${issue_tmp}"
 
     if [ -z "${comments_jsonl}" ] && [ -n "${COMMENT_ID}" ] && [ "${COMMENT_ID}" -le "${LAST_COMMENT_ID}" ] 2>/dev/null; then
-      # The triggering comment was already processed by a previous run or live DAP session!
       return 1
     fi
 
-    local issue_json title body state is_pr
-    issue_json="$(gh api "repos/${TARGET_REPO}/issues/${ISSUE_NUMBER}" 2>/dev/null || echo "{}")"
     title="$(printf '%s' "${issue_json}" | jq -r '.title // ""')"
     body="$(printf '%s' "${issue_json}" | jq -r '.body // ""')"
     state="$(printf '%s' "${issue_json}" | jq -r '.state // "open"')"
     is_pr="$(printf '%s' "${issue_json}" | jq -r 'if .pull_request != null then "Pull Request" else "Issue" end')"
-
     {
       echo "# Context: ${TARGET_REPO} ${is_pr} #${ISSUE_NUMBER} (${state})"
       echo "**Title:** ${title}"
@@ -614,7 +675,7 @@ persist_session() {
   if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
     git add -A
     # Never stage transient session or env files onto the code/memory branch
-    git reset -q HEAD -- dmtools.env .dmtools .fah/bash_jobs .fah/.tools .fah/sessions 2>/dev/null || true
+    git reset -q HEAD -- dmtools.env .dmtools .fah/bash_jobs .fah/.tools .fah/sessions .fah/trajectories 2>/dev/null || true
     if ! git diff --cached --quiet; then
       git commit -m "fa(${SESSION_KEY}): update repo memory/files [skip ci]" 2>/dev/null || true
       if ! git push origin "HEAD:${current_branch}" 2>/dev/null; then
