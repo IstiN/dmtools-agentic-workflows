@@ -270,7 +270,15 @@ clone_target_repo_fast() {
   fi
 }
 
-# Start shallow single-branch git clone concurrently while binary downloads finish!
+# Start shallow single-branch git clone AND initial GitHub Issue/comments prefetch concurrently while binary downloads finish!
+PREFETCH_ISSUE_FILE="$(mktemp)"
+PREFETCH_COMMENTS_FILE="$(mktemp)"
+if [ "${PROVIDER}" = "github" ] && [ -n "${TARGET_REPO}" ] && [ -n "${ISSUE_NUMBER}" ]; then
+  gh api "repos/${TARGET_REPO}/issues/${ISSUE_NUMBER}" 2>/dev/null > "${PREFETCH_ISSUE_FILE}" || echo "{}" > "${PREFETCH_ISSUE_FILE}" &
+  PID_PREFETCH_ISS=$!
+  gh api "repos/${TARGET_REPO}/issues/${ISSUE_NUMBER}/comments?per_page=100" --paginate 2>/dev/null > "${PREFETCH_COMMENTS_FILE}" || echo "[]" > "${PREFETCH_COMMENTS_FILE}" &
+  PID_PREFETCH_COMM=$!
+fi
 clone_target_repo_fast &
 PID_CLONE=$!
 
@@ -313,6 +321,8 @@ done
 wait "${PID_FA}"
 wait "${PID_DMT}"
 wait "${PID_CLONE}"
+[ -n "${PID_PREFETCH_ISS:-}" ] && wait "${PID_PREFETCH_ISS}" 2>/dev/null || true
+[ -n "${PID_PREFETCH_COMM:-}" ] && wait "${PID_PREFETCH_COMM}" 2>/dev/null || true
 
 # ── 5. Workspace Setup ────────────────────────────────────────────────────────
 cd "${WORKSPACE}"
@@ -392,6 +402,19 @@ fetch_unprocessed_github_comments() {
   if [ -z "${repo}" ] || [ -z "${issue}" ] || [ "${PROVIDER}" != "github" ]; then
     return 0
   fi
+  if [ -n "${PREFETCH_COMMENTS_FILE:-}" ] && [ -s "${PREFETCH_COMMENTS_FILE}" ]; then
+    jq -c --argjson since "${since_id}" --arg trig "${MENTION_TRIGGER}" '
+      .[]
+      | select(.id > $since)
+      | select((.user.type // "") != "Bot")
+      | select((.user.login // "") | test("\\[bot\\]$") | not)
+      | select((.body // "") | ascii_downcase | contains($trig | ascii_downcase))
+      | {id: .id, author: .user.login, created_at: .created_at, body: .body, url: .html_url}
+    ' "${PREFETCH_COMMENTS_FILE}" 2>/dev/null || true
+    rm -f "${PREFETCH_COMMENTS_FILE}"
+    PREFETCH_COMMENTS_FILE=""
+    return 0
+  fi
   gh api "repos/${repo}/issues/${issue}/comments?per_page=100" --paginate 2>/dev/null \
     | jq -c --argjson since "${since_id}" --arg trig "${MENTION_TRIGGER}" '
       .[]
@@ -408,18 +431,26 @@ build_turn_prompt() {
   local new_max_id="${LAST_COMMENT_ID}"
 
   if [ "${PROVIDER}" = "github" ] && [ -n "${TARGET_REPO}" ] && [ -n "${ISSUE_NUMBER}" ]; then
-    local issue_tmp comments_tmp issue_json title body state is_pr
-    issue_tmp="$(mktemp)"
-    comments_tmp="$(mktemp)"
-    fetch_unprocessed_github_comments "${TARGET_REPO}" "${ISSUE_NUMBER}" "${LAST_COMMENT_ID}" > "${comments_tmp}" &
-    local pid_comm=$!
-    gh api "repos/${TARGET_REPO}/issues/${ISSUE_NUMBER}" 2>/dev/null > "${issue_tmp}" || echo "{}" > "${issue_tmp}" &
-    local pid_iss=$!
-    wait "${pid_comm}" || true
-    wait "${pid_iss}" || true
-    comments_jsonl="$(cat "${comments_tmp}")"
-    issue_json="$(cat "${issue_tmp}")"
-    rm -f "${comments_tmp}" "${issue_tmp}"
+    local issue_json title body state is_pr comments_jsonl
+    if [ -n "${PREFETCH_ISSUE_FILE:-}" ] && [ -s "${PREFETCH_ISSUE_FILE}" ]; then
+      issue_json="$(cat "${PREFETCH_ISSUE_FILE}")"
+      rm -f "${PREFETCH_ISSUE_FILE}"
+      PREFETCH_ISSUE_FILE=""
+      comments_jsonl="$(fetch_unprocessed_github_comments "${TARGET_REPO}" "${ISSUE_NUMBER}" "${LAST_COMMENT_ID}")"
+    else
+      local issue_tmp comments_tmp
+      issue_tmp="$(mktemp)"
+      comments_tmp="$(mktemp)"
+      fetch_unprocessed_github_comments "${TARGET_REPO}" "${ISSUE_NUMBER}" "${LAST_COMMENT_ID}" > "${comments_tmp}" &
+      local pid_comm=$!
+      gh api "repos/${TARGET_REPO}/issues/${ISSUE_NUMBER}" 2>/dev/null > "${issue_tmp}" || echo "{}" > "${issue_tmp}" &
+      local pid_iss=$!
+      wait "${pid_comm}" || true
+      wait "${pid_iss}" || true
+      comments_jsonl="$(cat "${comments_tmp}")"
+      issue_json="$(cat "${issue_tmp}")"
+      rm -f "${comments_tmp}" "${issue_tmp}"
+    fi
 
     if [ -z "${comments_jsonl}" ] && [ -n "${COMMENT_ID}" ] && [ "${COMMENT_ID}" -le "${LAST_COMMENT_ID}" ] 2>/dev/null; then
       return 1
@@ -429,7 +460,6 @@ build_turn_prompt() {
     body="$(printf '%s' "${issue_json}" | jq -r '.body // ""')"
     state="$(printf '%s' "${issue_json}" | jq -r '.state // "open"')"
     is_pr="$(printf '%s' "${issue_json}" | jq -r 'if .pull_request != null then "Pull Request" else "Issue" end')"
-    {
       echo "# Context: ${TARGET_REPO} ${is_pr} #${ISSUE_NUMBER} (${state})"
       echo "**Title:** ${title}"
       echo ""
