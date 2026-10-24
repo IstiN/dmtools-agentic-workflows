@@ -142,15 +142,6 @@ jobs:
     runs-on: ${{ inputs.runner || 'ubuntu-slim' }}
     timeout-minutes: 60
     steps:
-      - name: Cache fa + dmtools-dart binaries
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.local/bin
-            ~/.local/lib
-            ~/.dmtools/bin
-          key: fa-universal-bins-${{ runner.os }}-${{ runner.arch }}-${{ vars.FA_VERSION || 'latest' }}-${{ vars.DMTOOLS_VERSION || 'latest' }}
-
       - name: Run Universal FA Agent
         env:
           # Workflow kit reference (supports immutable SHA/branch from github.workflow_ref)
