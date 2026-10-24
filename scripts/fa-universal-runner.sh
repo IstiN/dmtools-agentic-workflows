@@ -424,11 +424,33 @@ run_fa_turn() {
   local reply_file="$2"
   local cmd=(fa --session "${SESSION_KEY}" --session-root "${SESSION_ROOT}" --prompt-file "${prompt_file}")
 
-  if [ -n "${INPUT_PROVIDER_NAME:-}" ]; then
-    cmd+=(--provider "${INPUT_PROVIDER_NAME}")
+  local prov="${INPUT_PROVIDER_NAME:-}"
+  local mod="${INPUT_MODEL:-}"
+
+  # Auto-detect provider/model from available API keys when not explicitly supplied
+  if [ -z "${prov}" ]; then
+    if [ -n "${KIMI_API_KEY:-}" ]; then
+      prov="kimi"
+      mod="${mod:-kimi-for-coding}"
+    elif [ -n "${ZAI_API_KEY:-}" ]; then
+      prov="zai"
+      mod="${mod:-glm-4.5}"
+    elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+      prov="anthropic"
+    elif [ -n "${GEMINI_API_KEY:-}" ]; then
+      prov="google"
+    elif [ -n "${OPENROUTER_API_KEY:-}" ]; then
+      prov="openrouter"
+    elif [ -n "${OPENAI_API_KEY:-}" ]; then
+      prov="openai"
+    fi
   fi
-  if [ -n "${INPUT_MODEL:-}" ]; then
-    cmd+=(--model "${INPUT_MODEL}")
+
+  if [ -n "${prov}" ]; then
+    cmd+=(--provider "${prov}")
+  fi
+  if [ -n "${mod}" ]; then
+    cmd+=(--model "${mod}")
   fi
 
   echo "🚀 Executing: ${cmd[*]}"
