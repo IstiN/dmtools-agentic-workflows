@@ -184,7 +184,8 @@ install_dmtools_fast() {
   fi
   curl -fsSL "${url}" -o "${tmp}/${asset}"
   tar -xzf "${tmp}/${asset}" -C "${tmp}"
-  src="${tmp}/bundle"
+  src="${tmp}/dmtools"
+  [ -d "${src}" ] || src="${tmp}/bundle"
   [ -d "${src}" ] || src="${tmp}"
   install_bin="${HOME}/.dmtools/bin"
   mkdir -p "${install_bin}/native/quickjs"
