@@ -462,6 +462,10 @@ run_fa_turn() {
           --arg base "${base_url:-https://api.kimi.com/coding/v1}" \
           --arg model "${mod:-kimi-for-coding}" \
           '{baseUrl: $base, model: $model, apiKeyEnvVar: "KIMI_API_KEY", input: ["text", "image"]}')"
+        export FA_PROVIDERS_QUEUE="$(jq -nc \
+          --arg base "${base_url:-https://api.kimi.com/coding/v1}" \
+          --arg model "${mod:-kimi-for-coding}" \
+          '[{provider_type: "openai-completions", provider_config: {baseUrl: $base, model: $model, apiKeyEnv: "KIMI_API_KEY", input: ["text", "image"]}}]')"
         ;;
       zai)
         export FA_PROVIDER_TYPE="zai"
@@ -469,6 +473,10 @@ run_fa_turn() {
           --arg base "${base_url:-https://api.z.ai/api/coding/paas/v4}" \
           --arg model "${mod:-glm-4.5}" \
           '{baseUrl: $base, model: $model, apiKeyEnvVar: "ZAI_API_KEY", input: ["text", "image"]}')"
+        export FA_PROVIDERS_QUEUE="$(jq -nc \
+          --arg base "${base_url:-https://api.z.ai/api/coding/paas/v4}" \
+          --arg model "${mod:-glm-4.5}" \
+          '[{provider_type: "zai", provider_config: {baseUrl: $base, model: $model, apiKeyEnv: "ZAI_API_KEY", input: ["text", "image"]}}]')"
         ;;
       anthropic)
         export FA_PROVIDER_TYPE="anthropic"
@@ -476,6 +484,10 @@ run_fa_turn() {
           --arg base "${base_url:-https://api.anthropic.com}" \
           --arg model "${mod:-claude-sonnet-4-5}" \
           '{baseUrl: $base, model: $model, apiKeyEnvVar: "ANTHROPIC_API_KEY", input: ["text", "image"]}')"
+        export FA_PROVIDERS_QUEUE="$(jq -nc \
+          --arg base "${base_url:-https://api.anthropic.com}" \
+          --arg model "${mod:-claude-sonnet-4-5}" \
+          '[{provider_type: "anthropic", provider_config: {baseUrl: $base, model: $model, apiKeyEnv: "ANTHROPIC_API_KEY", input: ["text", "image"]}}]')"
         ;;
       google|gemini)
         export FA_PROVIDER_TYPE="google"
@@ -483,6 +495,10 @@ run_fa_turn() {
           --arg base "${base_url:-https://generativelanguage.googleapis.com/v1beta}" \
           --arg model "${mod:-gemini-2.5-pro}" \
           '{baseUrl: $base, model: $model, apiKeyEnvVar: "GEMINI_API_KEY", input: ["text", "image"]}')"
+        export FA_PROVIDERS_QUEUE="$(jq -nc \
+          --arg base "${base_url:-https://generativelanguage.googleapis.com/v1beta}" \
+          --arg model "${mod:-gemini-2.5-pro}" \
+          '[{provider_type: "google", provider_config: {baseUrl: $base, model: $model, apiKeyEnv: "GEMINI_API_KEY", input: ["text", "image"]}}]')"
         ;;
       openrouter)
         export FA_PROVIDER_TYPE="openrouter"
@@ -490,6 +506,10 @@ run_fa_turn() {
           --arg base "${base_url:-https://openrouter.ai/api/v1}" \
           --arg model "${mod:-anthropic/claude-sonnet-4}" \
           '{baseUrl: $base, model: $model, apiKeyEnvVar: "OPENROUTER_API_KEY", input: ["text", "image"]}')"
+        export FA_PROVIDERS_QUEUE="$(jq -nc \
+          --arg base "${base_url:-https://openrouter.ai/api/v1}" \
+          --arg model "${mod:-anthropic/claude-sonnet-4}" \
+          '[{provider_type: "openai-completions", provider_config: {baseUrl: $base, model: $model, apiKeyEnv: "OPENROUTER_API_KEY", input: ["text", "image"]}}]')"
         ;;
       openai|openai-completions)
         export FA_PROVIDER_TYPE="openai"
@@ -497,6 +517,10 @@ run_fa_turn() {
           --arg base "${base_url:-https://api.openai.com/v1}" \
           --arg model "${mod:-gpt-4o}" \
           '{baseUrl: $base, model: $model, apiKeyEnvVar: "OPENAI_API_KEY", input: ["text", "image"]}')"
+        export FA_PROVIDERS_QUEUE="$(jq -nc \
+          --arg base "${base_url:-https://api.openai.com/v1}" \
+          --arg model "${mod:-gpt-4o}" \
+          '[{provider_type: "openai-completions", provider_config: {baseUrl: $base, model: $model, apiKeyEnv: "OPENAI_API_KEY", input: ["text", "image"]}}]')"
         ;;
       *)
         if [ -n "${prov}" ]; then
