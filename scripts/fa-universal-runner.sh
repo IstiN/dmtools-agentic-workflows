@@ -175,12 +175,13 @@ install_dmtools_fast() {
     echo "✅ dmtools already on PATH: $(command -v dmtools)"
     return 0
   fi
-  local ver="${DMTOOLS_VERSION:-latest}"
+  local ver="${DMTOOLS_VERSION:-}"
   export DMTOOLS_INSTALL_DIR="${HOME}/.dmtools"
   if [ "${ver}" != "latest" ] && [ -n "${ver}" ]; then
-    curl -fsSL "https://github.com/epam/dmtools-dart/releases/download/${ver}/install.sh" \
+    DMTOOLS_VERSION="${ver}" curl -fsSL "https://github.com/epam/dmtools-dart/releases/download/${ver}/install.sh" \
       | bash -s -- "${ver}"
   else
+    unset DMTOOLS_VERSION
     curl -fsSL "https://github.com/epam/dmtools-dart/releases/latest/download/install.sh" \
       | bash
   fi
