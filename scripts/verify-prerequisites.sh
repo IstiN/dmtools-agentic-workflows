@@ -8,4 +8,6 @@
   if [ -n "${FLUTTER_VERSION}" ]; then
     flutter --version
     dart --version
+  elif [ -n "${DART_VERSION:-}" ]; then
+    dart --version
   fi
