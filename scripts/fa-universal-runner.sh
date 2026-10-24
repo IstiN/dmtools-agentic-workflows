@@ -296,29 +296,16 @@ if [ -f "${SCRIPT_DIR}/export-provider-key-slots.sh" ]; then
   set +a
 fi
 
-mkdir -p "${HOME}/.dmtools"
-DMTOOLS_ENV_FILE="${HOME}/.dmtools/dmtools.env"
-touch "${DMTOOLS_ENV_FILE}"
-chmod 600 "${DMTOOLS_ENV_FILE}"
-
+# dmtools-dart and fa read environment variables directly from the process environment.
+# If a multi-line DMTOOLS_ENV secret is provided, export its KEY=VALUE lines into env.
 if [ -n "${DMTOOLS_ENV:-}" ]; then
-  printf '%s\n' "${DMTOOLS_ENV}" >> "${DMTOOLS_ENV_FILE}"
+  while IFS= read -r line; do
+    case "${line}" in
+      ""|\#*) continue ;;
+      *=*) export "${line?}" 2>/dev/null || true ;;
+    esac
+  done <<< "${DMTOOLS_ENV}"
 fi
-
-for var_name in \
-  SOURCE_GITHUB_TOKEN GITHUB_TOKEN GITLAB_TOKEN BITBUCKET_TOKEN \
-  JIRA_BASE_PATH JIRA_LOGIN_PASS_TOKEN JIRA_AUTH_TYPE JIRA_EMAIL JIRA_API_TOKEN \
-  CONFLUENCE_BASE_PATH CONFLUENCE_LOGIN_PASS_TOKEN CONFLUENCE_AUTH_TYPE \
-  ADO_ORGANIZATION ADO_PROJECT ADO_PAT_TOKEN \
-  FIGMA_TOKEN TESTRAIL_BASE_PATH TESTRAIL_USERNAME TESTRAIL_API_KEY \
-  GEMINI_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY DIAL_API_KEY OPENROUTER_API_KEY ZAI_API_KEY KIMI_API_KEY \
-  DEFAULT_TRACKER DEFAULT_LLM; do
-  val="${!var_name:-}"
-  if [ -n "${val}" ] && ! grep -q "^${var_name}=" "${DMTOOLS_ENV_FILE}" 2>/dev/null; then
-    printf '%s=%s\n' "${var_name}" "${val}" >> "${DMTOOLS_ENV_FILE}"
-  fi
-done
-
 wait "${PID_FA}"
 wait "${PID_DMT}"
 wait "${PID_CLONE}"
@@ -336,11 +323,6 @@ if [ -n "${EFFECTIVE_GH_TOKEN}" ]; then
   git config --local --replace-all credential.helper '' 2>/dev/null || true
   git config --local --replace-all credential.https://github.com.helper '' 2>/dev/null || true
   git config --local --add credential.https://github.com.helper '!f() { [ "$1" = "get" ] || return 0; echo "username=x-access-token"; echo "password=${EFFECTIVE_GH_TOKEN}"; }; f'
-fi
-
-# Copy dmtools.env into workspace root if not already present (and exclude from git)
-if [ ! -f "${WORKSPACE}/dmtools.env" ]; then
-  cp "${DMTOOLS_ENV_FILE}" "${WORKSPACE}/dmtools.env"
 fi
 
 # Ensure a valid minimal .fah/config.yaml exists in the workspace so project memory is stored in the repo
