@@ -84,6 +84,18 @@ on:
         required: false
         type: string
         default: "github"
+      provider_name:
+        required: false
+        type: string
+        default: ""
+      model:
+        required: false
+        type: string
+        default: ""
+      post_reply_to_issue:
+        required: false
+        type: boolean
+        default: true
       runner:
         required: false
         type: string
@@ -162,6 +174,9 @@ jobs:
           INPUT_ISSUE_NUMBER: ${{ inputs.issue_number || github.event.client_payload.issue_number || github.event.issue.number || github.event.pull_request.number || '' }}
           INPUT_COMMENT_ID: ${{ inputs.comment_id || github.event.client_payload.comment_id || github.event.comment.id || '' }}
           INPUT_PROMPT: ${{ inputs.prompt || github.event.client_payload.prompt || github.event.comment.body || github.event.issue.body || '' }}
+          INPUT_PROVIDER_NAME: ${{ inputs.provider_name || vars.FA_PROVIDER_NAME || '' }}
+          INPUT_MODEL: ${{ inputs.model || vars.FA_MODEL || '' }}
+          POST_REPLY_TO_ISSUE: ${{ inputs.post_reply_to_issue }}
 
           # Versions
           FA_VERSION: ${{ vars.FA_VERSION_MACHINE || vars.FA_VERSION || 'latest' }}
@@ -192,6 +207,7 @@ jobs:
 
           # Standard LLM & DMTools keys
           DMTOOLS_ENV: ${{ secrets.DMTOOLS_ENV }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
