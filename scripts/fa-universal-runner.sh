@@ -325,8 +325,8 @@ if [ -n "${EFFECTIVE_GH_TOKEN}" ]; then
   git config --local --add credential.https://github.com.helper '!f() { [ "$1" = "get" ] || return 0; echo "username=x-access-token"; echo "password=${EFFECTIVE_GH_TOKEN}"; }; f'
 fi
 
-# Ensure a valid minimal .fah/config.yaml exists in the workspace so project memory is stored in the repo
-if [ ! -f "${WORKSPACE}/.fah/config.yaml" ]; then
+# Ensure a valid minimal .fah/config.yaml exists in the workspace when project memory is enabled (default: true)
+if [ "${FA_PERSIST_MEMORY:-true}" = "true" ] && [ ! -f "${WORKSPACE}/.fah/config.yaml" ]; then
   mkdir -p "${WORKSPACE}/.fah" "${WORKSPACE}/.fah/memory"
   cat << 'EOF' > "${WORKSPACE}/.fah/config.yaml"
 memory:
@@ -690,6 +690,9 @@ persist_session() {
     git add -A
     # Never stage transient session or env files onto the code/memory branch
     git reset -q HEAD -- dmtools.env .dmtools .fah/bash_jobs .fah/.tools .fah/sessions .fah/trajectories 2>/dev/null || true
+    if [ "${FA_PERSIST_MEMORY:-true}" = "false" ]; then
+      git reset -q HEAD -- .fah/memory .fah/config.yaml 2>/dev/null || true
+    fi
     if ! git diff --cached --quiet; then
       git commit -m "fa(${SESSION_KEY}): update repo memory/files [skip ci]" 2>/dev/null || true
       if ! git push origin "HEAD:${current_branch}" 2>/dev/null; then
