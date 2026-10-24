@@ -614,7 +614,7 @@ persist_session() {
   if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
     git add -A
     # Never stage transient session or env files onto the code/memory branch
-    git reset -q HEAD -- dmtools.env .dmtools .fah/bash_jobs .fah/.tools 2>/dev/null || true
+    git reset -q HEAD -- dmtools.env .dmtools .fah/bash_jobs .fah/.tools .fah/sessions 2>/dev/null || true
     if ! git diff --cached --quiet; then
       git commit -m "fa(${SESSION_KEY}): update repo memory/files [skip ci]" 2>/dev/null || true
       if ! git push origin "HEAD:${current_branch}" 2>/dev/null; then
