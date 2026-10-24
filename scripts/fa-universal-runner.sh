@@ -328,14 +328,14 @@ wait "${PID_CLONE}"
 # ── 5. Workspace Setup ────────────────────────────────────────────────────────
 cd "${WORKSPACE}"
 
-# Configure git credentials on the target checkout
+# Configure git credentials on the target checkout (fast inline setup — no submodule walk or API round-trip)
+git config user.name "fa[bot]"
+git config user.email "fa[bot]@users.noreply.github.com"
 if [ -n "${EFFECTIVE_GH_TOKEN}" ]; then
-  if [ -f "${SCRIPT_DIR}/../kit/install-source-git-credentials.sh" ]; then
-    SOURCE_GITHUB_TOKEN="${EFFECTIVE_GH_TOKEN}" bash "${SCRIPT_DIR}/../kit/install-source-git-credentials.sh" || true
-  else
-    git config user.name "fa[bot]"
-    git config user.email "fa[bot]@users.noreply.github.com"
-  fi
+  git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+  git config --local --replace-all credential.helper '' 2>/dev/null || true
+  git config --local --replace-all credential.https://github.com.helper '' 2>/dev/null || true
+  git config --local --add credential.https://github.com.helper '!f() { [ "$1" = "get" ] || return 0; echo "username=x-access-token"; echo "password=${EFFECTIVE_GH_TOKEN}"; }; f'
 fi
 
 # Copy dmtools.env into workspace root if not already present (and exclude from git)
