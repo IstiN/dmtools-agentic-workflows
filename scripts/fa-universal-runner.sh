@@ -460,6 +460,7 @@ build_turn_prompt() {
     body="$(printf '%s' "${issue_json}" | jq -r '.body // ""')"
     state="$(printf '%s' "${issue_json}" | jq -r '.state // "open"')"
     is_pr="$(printf '%s' "${issue_json}" | jq -r 'if .pull_request != null then "Pull Request" else "Issue" end')"
+    {
       echo "# Context: ${TARGET_REPO} ${is_pr} #${ISSUE_NUMBER} (${state})"
       echo "**Title:** ${title}"
       echo ""
