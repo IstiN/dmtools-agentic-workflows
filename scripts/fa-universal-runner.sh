@@ -343,7 +343,7 @@ fetch_unprocessed_github_comments() {
       | select(.id > $since)
       | select((.user.type // "") != "Bot")
       | select((.user.login // "") | test("\\[bot\\]$") | not)
-      | select((.body // "") | test("(^|[\\s(])" + ($trig | gsub("([.^$|()*+?\\[\\]\\\\])"; "\\\\\1")) + "\\b"; "i"))
+      | select((.body // "") | ascii_downcase | contains($trig | ascii_downcase))
       | {id: .id, author: .user.login, created_at: .created_at, body: .body, url: .html_url}
     ' || true
 }
@@ -395,6 +395,7 @@ build_turn_prompt() {
         echo "## Incoming Instruction"
         echo "${PROMPT_TEXT}"
         echo ""
+        PROMPT_TEXT="" # consume once so the post-turn double-check only runs if new comments arrive
         if [ -n "${COMMENT_ID}" ] && [ "${COMMENT_ID}" -gt "${new_max_id}" ] 2>/dev/null; then
           new_max_id="${COMMENT_ID}"
         fi
@@ -427,6 +428,7 @@ run_fa_turn() {
 
   local prov="${INPUT_PROVIDER_NAME:-}"
   local mod="${INPUT_MODEL:-}"
+  local base_url="${INPUT_BASE_URL:-}"
 
   # Auto-detect provider/model from available API keys when not explicitly supplied
   if [ -z "${prov}" ]; then
@@ -447,8 +449,30 @@ run_fa_turn() {
     fi
   fi
 
+  # Map catalog aliases (kimi, openrouter, openai) to valid fa --provider kinds + --base-url
+  case "${prov}" in
+    kimi)
+      prov="openai-completions"
+      base_url="${base_url:-https://api.kimi.com/coding/v1}"
+      mod="${mod:-kimi-for-coding}"
+      export OPENAI_API_KEY="${KIMI_API_KEY:-${OPENAI_API_KEY:-}}"
+      ;;
+    openrouter)
+      prov="openai-completions"
+      base_url="${base_url:-https://openrouter.ai/api/v1}"
+      export OPENAI_API_KEY="${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-}}"
+      ;;
+    openai)
+      prov="openai-completions"
+      base_url="${base_url:-https://api.openai.com/v1}"
+      ;;
+  esac
+
   if [ -n "${prov}" ]; then
     cmd+=(--provider "${prov}")
+  fi
+  if [ -n "${base_url}" ]; then
+    cmd+=(--base-url "${base_url}")
   fi
   if [ -n "${mod}" ]; then
     cmd+=(--model "${mod}")
