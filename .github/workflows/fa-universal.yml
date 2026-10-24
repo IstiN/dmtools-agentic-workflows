@@ -1,0 +1,216 @@
+# Universal Agent Workflow (`fa` + `dmtools-dart` + DAP + Single-Queue Session)
+#
+# Supports BOTH:
+#   1. Centralized GitHub App / `network.fa1.dev` webhook dispatch (`workflow_dispatch`
+#      or `repository_dispatch`) — zero workflow files required in target repos!
+#   2. In-repo reusable workflow call (`workflow_call`) with standard secrets/keys
+#      (`secrets: inherit`).
+#
+# Key properties:
+#   - Minimal dependencies: installs `fa` and `dmtools-dart` native binaries in
+#     parallel (~2s startup; no Java/Node/Flutter SDK setup).
+#   - Single-queue concurrency per (target_repo, session_key) with `cancel-in-progress: false`.
+#   - Catch-up inbox + double-check before exit + git-branch session persistence (`fa-sess/<session_key>`).
+#   - Connects to DAP Hub (`DAP_HUB_URL` / `FA_DAP_INVITE`) so live sessions receive
+#     real-time messages while running.
+
+name: FA Universal Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Target repository (owner/repo); defaults to current repo"
+        required: false
+        type: string
+        default: ""
+      session_key:
+        description: "Deterministic session & queue key (e.g. gh-owner-repo-42)"
+        required: false
+        type: string
+        default: ""
+      issue_number:
+        description: "Issue / PR / MR number"
+        required: false
+        type: string
+        default: ""
+      comment_id:
+        description: "Triggering comment ID (for catch-up deduplication)"
+        required: false
+        type: string
+        default: ""
+      prompt:
+        description: "Incoming message or prompt for fa"
+        required: false
+        type: string
+        default: ""
+      provider:
+        description: "Source SCM/tracker provider (github, gitlab, bitbucket, generic)"
+        required: false
+        type: string
+        default: "github"
+      runner:
+        description: "GitHub Actions runner label"
+        required: false
+        type: string
+        default: "ubuntu-slim"
+
+  repository_dispatch:
+    types: [fa-trigger, fa-webhook]
+
+  workflow_call:
+    inputs:
+      target_repo:
+        required: false
+        type: string
+        default: ""
+      session_key:
+        required: false
+        type: string
+        default: ""
+      issue_number:
+        required: false
+        type: string
+        default: ""
+      comment_id:
+        required: false
+        type: string
+        default: ""
+      prompt:
+        required: false
+        type: string
+        default: ""
+      provider:
+        required: false
+        type: string
+        default: "github"
+      runner:
+        required: false
+        type: string
+        default: "ubuntu-slim"
+      CUSTOM_PROVIDER_KEY1_NAME:
+        required: false
+        type: string
+        default: ""
+      CUSTOM_PROVIDER_KEY2_NAME:
+        required: false
+        type: string
+        default: ""
+      CUSTOM_PROVIDER_KEY3_NAME:
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: >-
+    fa-universal-${{
+      inputs.target_repo
+      || github.event.client_payload.target_repo
+      || github.repository
+    }}-${{
+      inputs.session_key
+      || github.event.client_payload.session_key
+      || inputs.issue_number
+      || github.event.client_payload.issue_number
+      || github.event.issue.number
+      || github.event.pull_request.number
+      || 'default'
+    }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  agent:
+    name: "fa (${{ inputs.session_key || inputs.issue_number || github.event.issue.number || 'universal' }})"
+    runs-on: ${{ inputs.runner || 'ubuntu-slim' }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout workflow kit
+        uses: actions/checkout@v5
+        with:
+          repository: IstiN/dmtools-agentic-workflows
+          persist-credentials: false
+
+      - name: Move workflow kit to RUNNER_TEMP
+        run: |
+          rm -rf "${RUNNER_TEMP}/awf-kit"
+          mkdir -p "${RUNNER_TEMP}/awf-kit"
+          cp -R scripts kit "${RUNNER_TEMP}/awf-kit/"
+          # Clean workspace so fa-universal-runner.sh can clone/checkout target_repo cleanly
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+      - name: Cache fa + dmtools-dart binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/bin
+            ~/.local/lib
+            ~/.dmtools/bin
+          key: fa-universal-bins-${{ runner.os }}-${{ runner.arch }}-${{ vars.FA_VERSION || 'latest' }}-${{ vars.DMTOOLS_VERSION || 'latest' }}
+
+      - name: Run Universal FA Agent
+        env:
+          # Inputs (supports workflow_dispatch, workflow_call, repository_dispatch, and direct issue_comment events)
+          INPUT_PROVIDER: ${{ inputs.provider || github.event.client_payload.provider || 'github' }}
+          INPUT_TARGET_REPO: ${{ inputs.target_repo || github.event.client_payload.target_repo || github.repository }}
+          INPUT_SESSION_KEY: ${{ inputs.session_key || github.event.client_payload.session_key || '' }}
+          INPUT_ISSUE_NUMBER: ${{ inputs.issue_number || github.event.client_payload.issue_number || github.event.issue.number || github.event.pull_request.number || '' }}
+          INPUT_COMMENT_ID: ${{ inputs.comment_id || github.event.client_payload.comment_id || github.event.comment.id || '' }}
+          INPUT_PROMPT: ${{ inputs.prompt || github.event.client_payload.prompt || github.event.comment.body || github.event.issue.body || '' }}
+
+          # Versions
+          FA_VERSION: ${{ vars.FA_VERSION_MACHINE || vars.FA_VERSION || 'latest' }}
+          DMTOOLS_VERSION: ${{ vars.DMTOOLS_VERSION || 'latest' }}
+
+          # Auth Mode 1: GitHub App (optional — works across any repo where the App is installed)
+          FA_GITHUB_APP_ID: ${{ secrets.FA_GITHUB_APP_ID || secrets.APP_ID }}
+          FA_GITHUB_APP_PRIVATE_KEY: ${{ secrets.FA_GITHUB_APP_PRIVATE_KEY || secrets.APP_PRIVATE_KEY }}
+          FA_GITHUB_APP_INSTALLATION_ID: ${{ secrets.FA_GITHUB_APP_INSTALLATION_ID || '' }}
+
+          # Auth Mode 2: Standard Keys / PAT / Tokens
+          SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          BITBUCKET_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
+
+          # AI Provider Configuration for fa
+          FA_PROVIDER_TYPE: ${{ secrets.FA_PROVIDER_TYPE || vars.FA_PROVIDER_TYPE }}
+          FA_PROVIDER_CONFIG: ${{ secrets.FA_PROVIDER_CONFIG || vars.FA_PROVIDER_CONFIG }}
+          FA_PROVIDER_API_KEY: ${{ secrets.FA_PROVIDER_API_KEY }}
+          CUSTOM_PROVIDER_KEY1: ${{ secrets.CUSTOM_PROVIDER_KEY1 }}
+          CUSTOM_PROVIDER_KEY1_NAME: ${{ inputs.CUSTOM_PROVIDER_KEY1_NAME || vars.CUSTOM_PROVIDER_KEY1_NAME }}
+          CUSTOM_PROVIDER_KEY2: ${{ secrets.CUSTOM_PROVIDER_KEY2 }}
+          CUSTOM_PROVIDER_KEY2_NAME: ${{ inputs.CUSTOM_PROVIDER_KEY2_NAME || vars.CUSTOM_PROVIDER_KEY2_NAME }}
+          CUSTOM_PROVIDER_KEY3: ${{ secrets.CUSTOM_PROVIDER_KEY3 }}
+          CUSTOM_PROVIDER_KEY3_NAME: ${{ inputs.CUSTOM_PROVIDER_KEY3_NAME || vars.CUSTOM_PROVIDER_KEY3_NAME }}
+
+          # Standard LLM & DMTools keys
+          DMTOOLS_ENV: ${{ secrets.DMTOOLS_ENV }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY || secrets.ZAI_CODE_KEY }}
+          DIAL_API_KEY: ${{ secrets.DIAL_API_KEY }}
+          JIRA_BASE_PATH: ${{ secrets.JIRA_BASE_PATH || vars.JIRA_BASE_PATH }}
+          JIRA_LOGIN_PASS_TOKEN: ${{ secrets.JIRA_LOGIN_PASS_TOKEN }}
+          JIRA_AUTH_TYPE: ${{ secrets.JIRA_AUTH_TYPE || vars.JIRA_AUTH_TYPE }}
+          ADO_ORGANIZATION: ${{ secrets.ADO_ORGANIZATION || vars.ADO_ORGANIZATION }}
+          ADO_PROJECT: ${{ secrets.ADO_PROJECT || vars.ADO_PROJECT }}
+          ADO_PAT_TOKEN: ${{ secrets.ADO_PAT_TOKEN }}
+
+          # DAP Live Channel Attachment
+          DAP_HUB_URL: ${{ secrets.DAP_HUB_URL || vars.DAP_HUB_URL }}
+          DAP_CLIENT_SECRET: ${{ secrets.DAP_CLIENT_SECRET }}
+          DAP_CHANNELS_JSON: ${{ secrets.DAP_CHANNELS_JSON }}
+          DAP_KEY_PASSPHRASE: ${{ secrets.DAP_KEY_PASSPHRASE }}
+          FA_DAP_INVITE: ${{ secrets.FA_DAP_INVITE }}
+          FA_NETWORK_ENROLL_URL: ${{ secrets.FA_NETWORK_ENROLL_URL || vars.FA_NETWORK_ENROLL_URL }}
+          FA_NETWORK_TOKEN: ${{ secrets.FA_NETWORK_TOKEN }}
+        run: bash -e "${RUNNER_TEMP}/awf-kit/scripts/fa-universal-runner.sh"
