@@ -455,16 +455,19 @@ run_fa_turn() {
       prov="openai-completions"
       base_url="${base_url:-https://api.kimi.com/coding/v1}"
       mod="${mod:-kimi-for-coding}"
+      export FA_KEY_API_KIMI_COM="${KIMI_API_KEY:-${FA_KEY_API_KIMI_COM:-${OPENAI_API_KEY:-}}}"
       export OPENAI_API_KEY="${KIMI_API_KEY:-${OPENAI_API_KEY:-}}"
       ;;
     openrouter)
       prov="openai-completions"
       base_url="${base_url:-https://openrouter.ai/api/v1}"
+      export FA_KEY_OPENROUTER_AI="${OPENROUTER_API_KEY:-${FA_KEY_OPENROUTER_AI:-${OPENAI_API_KEY:-}}}"
       export OPENAI_API_KEY="${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-}}"
       ;;
     openai)
       prov="openai-completions"
       base_url="${base_url:-https://api.openai.com/v1}"
+      export FA_KEY_API_OPENAI_COM="${OPENAI_API_KEY:-${FA_KEY_API_OPENAI_COM:-}}"
       ;;
   esac
 
