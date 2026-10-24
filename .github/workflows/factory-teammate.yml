@@ -111,6 +111,11 @@ on:
         required: false
         default: ''
         type: string
+      dart-version:
+        description: 'Dart SDK for agent work via dart-lang/setup-dart@v1 (~7s, vs ~90s for Flutter SDK). "" (default) installs NOTHING. e.g. "stable", "3.9.0". Pure-Dart targets (dmtools-dart) pass this instead of flutter-version.'
+        required: false
+        default: ''
+        type: string
 
       CUSTOM_PROVIDER_KEY1_NAME:
         description: 'Env var name for slot 1 (plain input, not secret).'
@@ -505,9 +510,16 @@ jobs:
           flutter-version: ${{ inputs.flutter-version }}
           cache: true
 
+      - name: Set up Dart for agent work
+        if: inputs.dart-version != '' && inputs.flutter-version == ''
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ inputs.dart-version }}
+
       - name: Verify prerequisites
         env:
           FLUTTER_VERSION: ${{ inputs.flutter-version }}
+          DART_VERSION: ${{ inputs.dart-version }}
         # Body: scripts/verify-prerequisites.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
         # delivered via the factory-kit fetch at the invocation ref).
         run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/verify-prerequisites.sh"
