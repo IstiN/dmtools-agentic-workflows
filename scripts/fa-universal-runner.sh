@@ -275,9 +275,19 @@ fi
 if [ ! -f "${WORKSPACE}/dmtools.env" ]; then
   cp "${DMTOOLS_ENV_FILE}" "${WORKSPACE}/dmtools.env"
 fi
+
+# Ensure a valid minimal .fah/config.yaml exists in the workspace so project memory is stored in the repo
+if [ ! -f "${WORKSPACE}/.fah/config.yaml" ]; then
+  mkdir -p "${WORKSPACE}/.fah" "${WORKSPACE}/.fah/memory"
+  cat << 'EOF' > "${WORKSPACE}/.fah/config.yaml"
+memory:
+  projectPath: .fah/memory
+EOF
+fi
+
 if [ -d "${WORKSPACE}/.git" ]; then
   mkdir -p "${WORKSPACE}/.git/info"
-  for pat in "dmtools.env" ".dmtools/" ".dmtools/**" ".fah/bash_jobs/" ".fah/bash_jobs/**"; do
+  for pat in "dmtools.env" ".dmtools/" ".dmtools/**" ".fah/bash_jobs/" ".fah/bash_jobs/**" ".fah/.tools/" ".fah/.tools/**"; do
     grep -qxF "${pat}" "${WORKSPACE}/.git/info/exclude" 2>/dev/null || echo "${pat}" >> "${WORKSPACE}/.git/info/exclude"
   done
 fi
@@ -492,13 +502,25 @@ persist_session() {
   git config user.name "fa[bot]"
   git config user.email "fa[bot]@users.noreply.github.com"
 
-  # Commit any .fah/memory updates back to the working branch (best-effort)
-  if [ -d "${WORKSPACE}/.fah/memory" ] && [ -n "$(git status --porcelain -- .fah/memory 2>/dev/null)" ]; then
-    git add .fah/memory
-    git commit -m "fa memory: ${SESSION_KEY} [skip ci]" 2>/dev/null || true
-    git push origin "HEAD:${orig_branch}" 2>/dev/null \
-      && echo "🧠 Project memory (.fah/memory) pushed to ${orig_branch}" \
-      || echo "::warning::Could not push .fah/memory to ${orig_branch} (protected or diverged)"
+  # Commit and push any repo changes (memory in .fah/memory, .fah/config.yaml, scripts, or workspace files)
+  # before switching to the orphan session branch.
+  local current_branch
+  current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "${orig_branch}")"
+  if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    git add -A
+    # Never stage transient session or env files onto the code/memory branch
+    git reset -q HEAD -- dmtools.env .dmtools .fah/bash_jobs .fah/.tools 2>/dev/null || true
+    if ! git diff --cached --quiet; then
+      git commit -m "fa(${SESSION_KEY}): update repo memory/files [skip ci]" 2>/dev/null || true
+      if ! git push origin "HEAD:${current_branch}" 2>/dev/null; then
+        git pull --rebase origin "${current_branch}" 2>/dev/null || true
+        git push origin "HEAD:${current_branch}" 2>/dev/null \
+          && echo "🧠 Repo changes (.fah/memory, scripts, config) pushed to ${current_branch}" \
+          || echo "::warning::Could not push repo changes to ${current_branch} (protected or diverged)"
+      else
+        echo "🧠 Repo changes (.fah/memory, scripts, config) pushed to ${current_branch}"
+      fi
+    fi
   fi
 
   git switch --orphan "${FA_SESS_BRANCH}" 2>/dev/null || git switch -C "${FA_SESS_BRANCH}"
