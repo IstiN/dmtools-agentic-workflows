@@ -35,6 +35,7 @@ PROVIDER="${INPUT_PROVIDER:-${PROVIDER:-github}}"
 TARGET_REPO="${INPUT_TARGET_REPO:-${TARGET_REPO:-${GITHUB_REPOSITORY:-}}}"
 ISSUE_NUMBER="${INPUT_ISSUE_NUMBER:-${ISSUE_NUMBER:-}}"
 COMMENT_ID="${INPUT_COMMENT_ID:-${COMMENT_ID:-}}"
+IN_REPLY_TO_ID="${INPUT_IN_REPLY_TO_ID:-${IN_REPLY_TO_ID:-}}"
 PROMPT_TEXT="${INPUT_PROMPT:-${PROMPT:-}}"
 MENTION_TRIGGER="${FA_TRIGGER_MENTION:-@fa}"
 
@@ -615,21 +616,80 @@ run_fa_turn() {
   "${cmd[@]}" | tee "${reply_file}"
 }
 
-post_github_reply() {
+post_scm_reply() {
   local reply_file="$1"
-  if [ "${PROVIDER}" != "github" ] || [ -z "${TARGET_REPO}" ] || [ -z "${ISSUE_NUMBER}" ]; then
-    return 0
-  fi
+  local thread_reply_id="${2:-${IN_REPLY_TO_ID:-}}"
   if [ "${POST_REPLY_TO_ISSUE:-true}" != "true" ]; then
     return 0
   fi
   if [ ! -s "${reply_file}" ]; then
     return 0
   fi
-  gh api "repos/${TARGET_REPO}/issues/${ISSUE_NUMBER}/comments" \
-    -X POST -F "body=@${reply_file}" >/dev/null 2>&1 \
-    && echo "💬 Posted agent response to ${TARGET_REPO}#${ISSUE_NUMBER}" \
-    || echo "::warning::Failed to post comment to ${TARGET_REPO}#${ISSUE_NUMBER}"
+
+  if [ "${PROVIDER}" = "github" ] && [ -n "${TARGET_REPO}" ] && [ -n "${ISSUE_NUMBER}" ]; then
+    local owner repo
+    owner="${TARGET_REPO%%/*}"
+    repo="${TARGET_REPO#*/}"
+
+    # Prefer dmtools (dmtools-dart / java) CLI tools if available
+    if command -v dmtools >/dev/null 2>&1; then
+      # 1. PR review thread reply (inline code comment thread)
+      if [ -n "${thread_reply_id}" ] && [ "${thread_reply_id}" != "0" ] && [ "${thread_reply_id}" != "null" ]; then
+        local req_payload
+        req_payload="$(jq -nc \
+          --arg ws "${owner}" \
+          --arg r "${repo}" \
+          --arg pr "${ISSUE_NUMBER}" \
+          --arg thread "${thread_reply_id}" \
+          --rawfile text "${reply_file}" \
+          '{workspace: $ws, repository: $r, pullRequestId: $pr, inReplyToId: $thread, text: $text}')"
+        local resp
+        resp="$(dmtools github_reply_to_pr_thread --data "${req_payload}" 2>&1 || true)"
+        if printf '%s' "${resp}" | grep -q '"id"\|"body"'; then
+          echo "💬 Posted reply to PR review thread #${thread_reply_id} on ${TARGET_REPO}#${ISSUE_NUMBER} via dmtools"
+          return 0
+        else
+          echo "::warning::dmtools github_reply_to_pr_thread failed (${resp}), falling back to gh api"
+        fi
+      fi
+
+      # 2. General Issue / PR comment via dmtools
+      local req_payload
+      req_payload="$(jq -nc \
+        --arg ws "${owner}" \
+        --arg r "${repo}" \
+        --arg pr "${ISSUE_NUMBER}" \
+        --rawfile body "${reply_file}" \
+        '{workspace: $ws, repository: $r, pullRequestId: $pr, body: $body}')"
+      local resp
+      resp="$(dmtools github_create_comment --data "${req_payload}" 2>&1 || true)"
+      if printf '%s' "${resp}" | grep -q '"id"\|"body"'; then
+        echo "💬 Posted agent response to ${TARGET_REPO}#${ISSUE_NUMBER} via dmtools"
+        return 0
+      else
+        echo "::warning::dmtools github_create_comment failed (${resp}), falling back to gh api"
+      fi
+    fi
+
+    # Fallback to gh api if dmtools is not on PATH or call failed
+    if [ -n "${thread_reply_id}" ] && [ "${thread_reply_id}" != "0" ] && [ "${thread_reply_id}" != "null" ]; then
+      local gh_thread_payload
+      gh_thread_payload="$(jq -nc \
+        --arg in_reply_to "${thread_reply_id}" \
+        --rawfile body "${reply_file}" \
+        '{in_reply_to: ($in_reply_to | tonumber), body: $body}')"
+      if gh api "repos/${TARGET_REPO}/pulls/${ISSUE_NUMBER}/comments" \
+        --input - <<< "${gh_thread_payload}" >/dev/null 2>&1; then
+        echo "💬 Posted reply to PR review thread #${thread_reply_id} on ${TARGET_REPO}#${ISSUE_NUMBER} via gh api"
+        return 0
+      fi
+    fi
+
+    gh api "repos/${TARGET_REPO}/issues/${ISSUE_NUMBER}/comments" \
+      -X POST -F "body=@${reply_file}" >/dev/null 2>&1 \
+      && echo "💬 Posted agent response to ${TARGET_REPO}#${ISSUE_NUMBER} via gh api" \
+      || echo "::warning::Failed to post comment to ${TARGET_REPO}#${ISSUE_NUMBER}"
+  fi
 }
 
 TURN=0
@@ -652,7 +712,7 @@ while [ "${TURN}" -lt "${MAX_TURNS}" ]; do
   TURN=$((TURN + 1))
   echo "🔄 Turn ${TURN}: processing up to comment ID ${NEXT_COMMENT_ID}..."
   run_fa_turn "${PROMPT_FILE}" "${REPLY_FILE}"
-  post_github_reply "${REPLY_FILE}"
+  post_scm_reply "${REPLY_FILE}"
   rm -f "${PROMPT_FILE}" "${REPLY_FILE}"
 
   LAST_COMMENT_ID="${NEXT_COMMENT_ID}"

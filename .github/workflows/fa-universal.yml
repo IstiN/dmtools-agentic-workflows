@@ -39,6 +39,11 @@ on:
         required: false
         type: string
         default: ""
+      in_reply_to_id:
+        description: "Parent review comment ID (if triggered from a PR review thread)"
+        required: false
+        type: string
+        default: ""
       prompt:
         description: "Incoming message or prompt for fa"
         required: false
@@ -73,6 +78,10 @@ on:
         type: string
         default: ""
       comment_id:
+        required: false
+        type: string
+        default: ""
+      in_reply_to_id:
         required: false
         type: string
         default: ""
@@ -168,6 +177,7 @@ jobs:
           INPUT_SESSION_KEY: ${{ inputs.session_key || github.event.client_payload.session_key || '' }}
           INPUT_ISSUE_NUMBER: ${{ inputs.issue_number || github.event.client_payload.issue_number || github.event.issue.number || github.event.pull_request.number || '' }}
           INPUT_COMMENT_ID: ${{ inputs.comment_id || github.event.client_payload.comment_id || github.event.comment.id || '' }}
+          INPUT_IN_REPLY_TO_ID: ${{ inputs.in_reply_to_id || github.event.client_payload.in_reply_to_id || github.event.comment.in_reply_to_id || '' }}
           INPUT_PROMPT: ${{ inputs.prompt || github.event.client_payload.prompt || github.event.comment.body || github.event.issue.body || '' }}
           INPUT_PROVIDER_NAME: ${{ inputs.provider_name || vars.FA_PROVIDER_NAME || '' }}
           INPUT_MODEL: ${{ inputs.model || vars.FA_MODEL || '' }}
