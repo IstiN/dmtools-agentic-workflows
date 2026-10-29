@@ -100,6 +100,34 @@
       echo "→ PR-anchored REWORK of #$PR_NUMBER (reason=${INPUT_REASON:-<none>}, #544)"
       exit 0
     fi
+    # Post-concurrency-queue review idempotency guard (gh-1153): if a second
+    # review dispatch queued behind an in-flight review run, by the time it
+    # acquires the concurrency lock the first run may have already set
+    # `ai_pr_reviewed`, consumed `agent:review`, and posted a review/verdict
+    # on the PR's current headRefOid. Skip cleanly (0 LLM tokens burned).
+    pr_review_meta="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+      --json headRefOid,labels \
+      -q '[.headRefOid, (([.labels[].name] | index("ai_pr_reviewed")) != null), (([.labels[].name] | index("agent:review")) != null)] | @tsv' \
+      2>/dev/null || true)"
+    head_sha="$(echo "$pr_review_meta" | cut -f1)"
+    has_ai_pr_reviewed="$(echo "$pr_review_meta" | cut -f2)"
+    has_agent_review="$(echo "$pr_review_meta" | cut -f3)"
+    if [ "$has_ai_pr_reviewed" = "true" ] && [ "$has_agent_review" != "true" ] && [ -n "$head_sha" ]; then
+      head_reviewed="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" \
+        --jq "[.[] | select(.commit_id == \"$head_sha\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\" or ((.body // \"\") | gsub(\"^[[:space:]]+|[[:space:]]+$\"; \"\") != \"\")))] | length > 0" \
+        2>/dev/null || echo false)"
+      if [ "$head_reviewed" != "true" ]; then
+        head_reviewed="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
+          --jq "[.[] | select((.body // \"\") | (contains(\"dmtools:review-verdict\") and contains(\"$head_sha\")))] | length > 0" \
+          2>/dev/null || echo false)"
+      fi
+      if [ "$head_reviewed" = "true" ]; then
+        echo "run=false" >> "$GITHUB_OUTPUT"
+        echo "::notice::→ PR #$PR_NUMBER head $head_sha already reviewed (ai_pr_reviewed set, no agent:review) — skipping duplicate review"
+        echo "→ PR #$PR_NUMBER head $head_sha already reviewed (ai_pr_reviewed set, no agent:review) — skipping duplicate review"
+        exit 0
+      fi
+    fi
     echo "run=true" >> "$GITHUB_OUTPUT"
     echo "runner=$RUNNER_REVIEW" >> "$GITHUB_OUTPUT"
     echo "config=factory-agents/pr_review.json" >> "$GITHUB_OUTPUT"
