@@ -45,7 +45,16 @@
   tmp="$(mktemp -d)"
   gh release download "${tag}" --repo IstiN/dmtools-agents \
     --pattern 'factory-setup-*.zip' --dir "${tmp}" --clobber
-  unzip -q "${tmp}"/factory-setup-*.zip -d "${dir}"
+  # A release may carry MORE THAN ONE factory-setup-*.zip (the pack
+  # publisher keeps the two latest versions per component — live:
+  # agents-rel-20261028-213615 shipped 210111+213613). The glob then
+  # expands to two files and unzip reads the second zip as a MEMBER of
+  # the first — "caution: filename not matched" (all reviews went red,
+  # 2026-10-28). Pick the newest archive deterministically.
+  kit_zip="$(ls "${tmp}"/factory-setup-*.zip | sort | tail -1)"
+  [ "$(ls "${tmp}"/factory-setup-*.zip | wc -l | tr -d ' ')" -gt 1 ] && \
+    echo "::notice::multiple factory-setup zips in ${tag} — using $(basename "${kit_zip}")"
+  unzip -q "${kit_zip}" -d "${dir}"
   [ -f "${dir}/setup/cache.sh" ] || { echo "::error::factory-setup incomplete at ${tag} (no setup/cache.sh)"; exit 1; }
   [ -f "${dir}/configs/pr_review.json" ] || { echo "::error::factory-setup incomplete at ${tag} (no configs/)"; exit 1; }
   echo "→ factory-setup from ${tag} (FACTORY_ROOT=${dir})"
