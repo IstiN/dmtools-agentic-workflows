@@ -275,6 +275,11 @@ jobs:
           # Empty for schedule-scan dispatches (SM ticks): the label is
           # trusted as-is there (see rework_override_ok below).
           SENDER: ${{ github.event.sender.login || '' }}
+          # Comment-resume: issue_comment events re-arm a dev leg when
+          # the first HUMAN reply lands on an ai_questions_asked ticket.
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login || '' }}
+          COMMENT_ID: ${{ github.event.comment.id || '' }}
           INPUT_LEG: ${{ inputs.leg }}
           INPUT_REASON: ${{ inputs.reason }}
           # The assignee gate below compares against the machine login.

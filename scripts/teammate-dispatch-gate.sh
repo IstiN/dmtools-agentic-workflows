@@ -164,6 +164,53 @@
     fi
   fi
 
+  # ── Comment-resume (no-assumptions rule) ──
+  # A dev leg that flagged missing ticket inputs ends green with the
+  # ai_questions_asked label (outputs/needs-input.md — see the agents
+  # pack). The FIRST human reply on such an issue is assumed to carry
+  # the missing input and re-arms the dev leg here. Everything else
+  # (bot echoes, agent chatter, comments on tickets nobody asked
+  # about) is a clean no-op.
+  if [ "${EVENT_NAME:-}" = "issue_comment" ]; then
+    author="$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/${COMMENT_ID:-0}" -q .user.login 2>/dev/null || echo "${COMMENT_AUTHOR:-}")"
+    case "$author" in
+      ""|"${AGENT_HANDLE:-ai-teammate}"|github-actions[bot]|*bot)
+        echo "run=false" >> "$GITHUB_OUTPUT"
+        echo "→ issue_comment by '${author:-<none>}' — not a human reply, nothing to resume"
+        exit 0
+        ;;
+    esac
+    has_q="$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json labels -q '([.labels[].name] | index("ai_questions_asked")) != null' 2>/dev/null || echo false)"
+    if [ "$has_q" != "true" ]; then
+      echo "run=false" >> "$GITHUB_OUTPUT"
+      echo "→ issue_comment on #$NUMBER without ai_questions_asked — nothing to resume"
+      exit 0
+    fi
+    state="$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json state -q .state 2>/dev/null || true)"
+    if [ "$state" != "OPEN" ]; then
+      echo "run=false" >> "$GITHUB_OUTPUT"
+      echo "→ issue #$NUMBER is ${state:-unresolvable} — comment-resume skipped"
+      exit 0
+    fi
+    gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label ai_questions_asked >/dev/null 2>&1 || true
+    title="$(gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json title -q .title)"
+    if echo "$title" | grep -qiE '^\[?bug\]' || echo "$LABELS" | grep -qwi "bug"; then
+      runner="$RUNNER_BUG"; slot="bug"
+    else
+      runner="$RUNNER_STORY"; slot="story"
+    fi
+    case "$slot" in
+      bug) config="factory-agents/bug_development.json"; kind="dev" ;;
+      *)   config="factory-agents/story_development.json"; kind="dev" ;;
+    esac
+    echo "run=true" >> "$GITHUB_OUTPUT"
+    echo "runner=$runner" >> "$GITHUB_OUTPUT"
+    echo "config=$config" >> "$GITHUB_OUTPUT"
+    echo "kind=$kind" >> "$GITHUB_OUTPUT"
+    echo "→ comment-resume: human reply from '$author' — re-arming dev leg on #$NUMBER"
+    exit 0
+  fi
+
   # ALWAYS refresh labels/assignees from the API — not just for
   # explicit dispatches. Event-triggered runs (issues:assigned,
   # labeled, ...) sit QUEUED behind the per-issue concurrency group,
@@ -242,6 +289,13 @@
     if rework_override_ok; then
       runner="$RUNNER_REWORK"
     fi
+  elif echo "$LABELS" | grep -qw "ai_questions_asked"; then
+    # Ask-mode — the dev leg asked the reporter for missing inputs.
+    # No review/rework may derive while the question is open; only a human
+    # reply (comment-resume above) or an explicit dispatch may move it.
+    echo "run=false" >> "$GITHUB_OUTPUT"
+    echo "→ issue #$NUMBER carries ai_questions_asked — waiting for human input"
+    exit 0
   elif echo "$LABELS" | grep -qw "agent:review"; then
     # status:In Review is NOT an in-flight marker here — the DEV leg
     # sets it as the "ready for review" invitation, so blocking on it
