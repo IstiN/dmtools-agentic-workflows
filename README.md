@@ -16,6 +16,30 @@ never need edits to bump a version.
 
 ## What lives here
 
+### GitLab factory templates
+
+The [gitlab/](./gitlab/) directory is the source of the GitLab factory scripts
+and pipeline templates consumed by the DMTools setup UI. The UI downloads these
+files from the configured workflow repository/ref; it has no bundled script
+fallback. Test fixtures in the UI repository are offline snapshots, not runtime
+sources. Publish additions to the configured ref before deploying the updated UI.
+
+- [gitlab-auto-ci.yml](./gitlab/gitlab-auto-ci.yml): automatic lifecycle pipeline.
+  Intake runs on a ten-minute schedule or manually. Quality completion requests
+  reconciliation through the API. Direct webhook-triggered pipelines are rejected.
+- `gitlab-factory-{common,job,lifecycle,intake,rework,select-teammate}.sh`:
+  shared API/progress helpers, lifecycle, intake, existing-MR rework and account
+  selection. Development and review use separate tokens when configured.
+- The original `gitlab-ci.yml`, poller, publisher and `gitlab-quality-*.yml`
+  remain available for existing consumers.
+
+Automatic lifecycle setup creates the managed schedule before removing only
+legacy factory-managed Issue/MR webhooks and their trigger tokens. Unrelated
+hooks, schedules and triggers are preserved. Assignment and label changes are
+picked up on the next scheduled tick (up to ten minutes); progress updates do
+not create pipelines. Manual runs remain available for immediate intake.
+Approved MRs stay open for human merge.
+
 | Workflow | What it does | Caller stub |
 |---|---|---|
 | `factory-teammate.yml` | The issue-driven AI teammate: dev / review / rework legs, sessions, verdict, memory. Runs the agent pack (`bug_development@latest` …) from the dmtools-agents release selected by `factory_ref` / `vars.AGENTS_VERSION`. | `ai-teammate.yml` |
