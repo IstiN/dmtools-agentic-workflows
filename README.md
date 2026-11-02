@@ -39,6 +39,12 @@ hooks, schedules and triggers are preserved. Assignment and label changes are
 picked up on the next scheduled tick (up to ten minutes); progress updates do
 not create pipelines. Manual runs remain available for immediate intake.
 Approved MRs stay open for human merge.
+Review feedback and validation failures do not start rework automatically.
+Add `agent:rework` to the issue or MR, or select the manual rework leg; each
+request is consumed once, then the updated MR is validated and reviewed.
+Subsequent review feedback waits for another explicit request.
+Review uses an isolated temporary Git worktree at the MR head, so session,
+skill and other review-generated files cannot dirty the orchestration checkout.
 
 | Workflow | What it does | Caller stub |
 |---|---|---|

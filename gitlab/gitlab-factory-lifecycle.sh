@@ -57,7 +57,7 @@ if [ "$action" = validate ]; then
     success) factory_progress "$issue" validation success; exit 0 ;;
     failed|canceled|skipped|manual)
       factory_progress "$issue" validation "$status"
-      echo "Validation did not succeed: $status (pipeline $pipeline_id)." >&2; exit 1 ;;
+      echo "Validation did not succeed: $status (pipeline $pipeline_id)." >&2; exit 74 ;;
     created|pending|running|waiting_for_resource|preparing|scheduled)
       factory_progress "$issue" validation running
       echo "Validation is pending; releasing the factory runner until callback/reconciliation."
@@ -71,7 +71,24 @@ fi
 if [ "$action" = review ]; then
   factory_identity .dmtools/runners/fa-review.json
   context=$(mktemp -d)
-  trap 'rm -f "$context/merge_request.json" "$context/changes.json" "$context/discussions.json" "$context/runner.json" "$context/agent.log"; rmdir "$context"' EXIT
+  checkout="$context/checkout"
+  publisher="$PWD/.dmtools/scripts/gitlab-factory-publish-review.sh"
+  cleanup_review() {
+    local status=$?
+    trap - EXIT
+    cd "$orchestrator"
+    if [ -e "$checkout" ]; then
+      if ! git worktree remove --force "$checkout"; then
+        echo "Failed to remove the isolated review worktree: $checkout" >&2
+        exit 1
+      fi
+    fi
+    rm -f "$context/merge_request.json" "$context/changes.json" "$context/discussions.json" "$context/runner.json" "$context/agent.log"
+    rmdir "$context"
+    exit "$status"
+  }
+  orchestrator="$PWD"
+  trap cleanup_review EXIT
   export DMTOOLS_REVIEW_CONTEXT="$context"
   printf '%s' "$mr" > "$context/merge_request.json"
   factory_api GET "$mr_path/changes" > "$context/changes.json"
@@ -80,6 +97,12 @@ if [ "$action" = review ]; then
   }
   factory_list "$mr_path/discussions" > "$context/discussions.json"
   cp .dmtools/runners/fa-review.json "$context/runner.json"
+  git fetch --no-tags origin "refs/merge-requests/$mr_iid/head"
+  [ "$(git rev-parse FETCH_HEAD)" = "$head" ] || {
+    echo "MR changed while preparing the review checkout." >&2; exit 1;
+  }
+  git worktree add --detach "$checkout" "$head"
+  cd "$checkout"
   mkdir -p outputs/pr_review_comments
   rm -f outputs/pr_review.json outputs/pr_review_general.md
   dmtools run "$context/runner.json" --inputTicketId "$mr_iid" 2>&1 | tee "$context/agent.log"
@@ -93,7 +116,7 @@ if [ "$action" = review ]; then
   [ "$(printf '%s' "$current" | jq -r '.sha')" = "$head" ] || {
     echo "MR changed during review; refusing to publish a stale verdict." >&2; exit 1;
   }
-  bash .dmtools/scripts/gitlab-factory-publish-review.sh "$mr_iid"
+  bash "$publisher" "$mr_iid"
   decision=$(jq -r '.decision' outputs/pr_review.json)
   factory_api POST "$mr_path/notes" --data-urlencode \
     "body=<!-- dmtools-review:$head:$decision -->" >/dev/null
@@ -140,101 +163,104 @@ if [ -n "$issue" ]; then
     echo "Factory paused by issue state or stop label."; exit 0
   fi
 fi
+if [ -z "$force" ]; then
+  if printf '%s' "$mr" | jq -e 'any(.labels[]?; . == "agent:rework")' >/dev/null ||
+    { [ -n "$issue" ] && printf '%s' "$ticket" | jq -e 'any(.labels[]?; . == "agent:rework")' >/dev/null; }; then
+    force=rework
+  elif printf '%s' "$mr" | jq -e 'any(.labels[]?; . == "agent:review")' >/dev/null; then
+    force=review
+  fi
+fi
 
 job_issue="${issue:--}"
-for ((round=0; round<4; round++)); do
-  mr=$(factory_api GET "$mr_path")
-  if printf '%s' "$mr" | jq -e '.state != "opened" or .draft == true or any(.labels[]?; . == "blocked" or . == "needs-human" or . == "agent:skip")' >/dev/null; then
-    echo "MR lifecycle paused by its current state or stop labels."; exit 0
-  fi
-  head=$(printf '%s' "$mr" | jq -er '.sha')
-  notes=$(factory_list "$mr_path/notes")
-  decision=$(printf '%s' "$notes" | jq -r --arg head "$head" --argjson reviewer "$reviewer_id" '
-    [.[] | select(.author.id == $reviewer) | select(.body == ("<!-- dmtools-review:" + $head + ":approve -->") or
-                      .body == ("<!-- dmtools-review:" + $head + ":request_changes -->"))]
-    | sort_by(.id) | last | .body // ""')
-  if [ "$force" = review ]; then decision=''; fi
-  discussions=$(factory_list "$mr_path/discussions")
-  unresolved=$(printf '%s' "$discussions" | jq '[.[] | select(any(.notes[]; .resolvable == true and .resolved == false))] | length')
-  validated=$(printf '%s' "$notes" | jq --arg head "$head" --argjson developer "$developer_id" '
-    any(.[]; .author.id == $developer and .body == ("<!-- dmtools-validation:" + $head + ":success -->"))')
-  if [ -z "$force" ] && [[ "$decision" == *':approve -->' ]] && [ "$unresolved" -eq 0 ] && [ "$validated" = true ]; then
-    factory_labels "$mr_iid" "$issue" 'ai_pr_reviewed,pr_approved' 'agent:dev,agent:review,agent:rework,ai_validating'
-    echo "Current MR head is already reviewed and validated; human merge is pending."
-    exit 0
-  fi
-  if [ "$force" = rework ] || { [ -n "$decision" ] && { [[ "$decision" == *':request_changes -->' ]] || [ "$unresolved" -gt 0 ]; }; }; then
-    attempts=$(printf '%s' "$notes" | jq --argjson developer "$developer_id" --argjson reviewer "$reviewer_id" '
-      ([.[] | select(.author.id == $reviewer and (.body | test("^<!-- dmtools-review:[0-9a-f]+:approve -->$"))) | .id] | max // 0) as $approved |
-      [.[] | select(.id > $approved and .author.id == $developer and (.body | startswith("<!-- dmtools-rework:")))] | length')
-    if [ "$attempts" -ge 3 ]; then
-      factory_labels "$mr_iid" "$issue" needs-human 'agent:dev,agent:review,agent:rework,pr_approved'
-      factory_api POST "$mr_path/notes" --data-urlencode 'body=Automatic rework paused after three attempts. Human input is required.' >/dev/null
-      exit 1
-    fi
-    factory_labels "$mr_iid" "$issue" agent:rework 'agent:review,pr_approved,ai_validated,ai_pr_reviewed'
-    factory_api POST "$mr_path/notes" --data-urlencode "body=<!-- dmtools-rework:$head:$CI_PIPELINE_ID -->" >/dev/null
-    if ! bash .dmtools/scripts/gitlab-factory-job.sh "$job_issue" "rework-$round" \
-      bash .dmtools/scripts/gitlab-factory-rework.sh "$mr_iid"; then
-      factory_labels "$mr_iid" "$issue" needs-human 'pr_approved'
-      exit 1
-    fi
-    updated=$(factory_api GET "$mr_path")
-    if [ "$(printf '%s' "$updated" | jq -r '.sha')" = "$head" ] && [ "$unresolved" -eq 0 ]; then
-      factory_labels "$mr_iid" "$issue" needs-human 'agent:rework,pr_approved'
-      echo "Rework made no progress; human input is required." >&2; exit 1
-    fi
-    force=''
-    decision=''
-  fi
-  mr=$(factory_api GET "$mr_path")
-  head=$(printf '%s' "$mr" | jq -er '.sha')
-  factory_labels "$mr_iid" "$issue" ai_validating 'agent:rework,pr_approved,validation_failed'
-  validation_status=0
-  bash .dmtools/scripts/gitlab-factory-lifecycle.sh validate "$mr_iid" "$issue" || validation_status=$?
-  if [ "$validation_status" -eq 75 ]; then exit 0; fi
-  if [ "$validation_status" -ne 0 ]; then
-    factory_labels "$mr_iid" "$issue" 'validation_failed,agent:rework' 'ai_validating,pr_approved'
-    force=rework
-    continue
-  fi
-  factory_api POST "$mr_path/notes" --data-urlencode "body=<!-- dmtools-validation:$head:success -->" >/dev/null
-  factory_labels "$mr_iid" "$issue" 'ai_validated,agent:review' 'ai_validating,agent:rework'
-  if ! bash .dmtools/scripts/gitlab-factory-job.sh "$job_issue" "review-$round" \
-    bash .dmtools/scripts/gitlab-factory-lifecycle.sh review "$mr_iid"; then
+round=0
+mr=$(factory_api GET "$mr_path")
+if printf '%s' "$mr" | jq -e '.state != "opened" or .draft == true or any(.labels[]?; . == "blocked" or . == "needs-human" or . == "agent:skip")' >/dev/null; then
+  echo "MR lifecycle paused by its current state or stop labels."; exit 0
+fi
+head=$(printf '%s' "$mr" | jq -er '.sha')
+notes=$(factory_list "$mr_path/notes")
+decision=$(printf '%s' "$notes" | jq -r --arg head "$head" --argjson reviewer "$reviewer_id" '
+  [.[] | select(.author.id == $reviewer) | select(.body == ("<!-- dmtools-review:" + $head + ":approve -->") or
+                    .body == ("<!-- dmtools-review:" + $head + ":request_changes -->"))]
+  | sort_by(.id) | last | .body // ""')
+if [ "$force" = review ]; then decision=''; fi
+discussions=$(factory_list "$mr_path/discussions")
+unresolved=$(printf '%s' "$discussions" | jq '[.[] | select(any(.notes[]; .resolvable == true and .resolved == false))] | length')
+validated=$(printf '%s' "$notes" | jq --arg head "$head" --argjson developer "$developer_id" '
+  any(.[]; .author.id == $developer and .body == ("<!-- dmtools-validation:" + $head + ":success -->"))')
+if [ -z "$force" ] && [[ "$decision" == *':approve -->' ]] && [ "$unresolved" -eq 0 ] && [ "$validated" = true ]; then
+  factory_labels "$mr_iid" "$issue" 'ai_pr_reviewed,pr_approved' 'agent:dev,agent:review,agent:rework,ai_validating'
+  echo "Current MR head is already reviewed and validated; human merge is pending."
+  exit 0
+fi
+if [ -z "$force" ] && [ -n "$decision" ]; then
+  factory_labels "$mr_iid" "$issue" ai_pr_reviewed 'agent:review,pr_approved,ai_validating'
+  echo "Review completed for this head. Add agent:rework explicitly to request fixes."
+  exit 0
+fi
+if [ "$force" = rework ]; then
+  factory_labels "$mr_iid" "$issue" '' 'agent:rework,agent:review,pr_approved,ai_validated,ai_pr_reviewed'
+  factory_api POST "$mr_path/notes" --data-urlencode "body=<!-- dmtools-rework:$head:$CI_PIPELINE_ID -->" >/dev/null
+  if ! bash .dmtools/scripts/gitlab-factory-job.sh "$job_issue" "rework-$round" \
+    bash .dmtools/scripts/gitlab-factory-rework.sh "$mr_iid"; then
     factory_labels "$mr_iid" "$issue" needs-human 'pr_approved'
     exit 1
   fi
+  updated=$(factory_api GET "$mr_path")
+  if [ "$(printf '%s' "$updated" | jq -r '.sha')" = "$head" ] && [ "$unresolved" -eq 0 ]; then
+    factory_labels "$mr_iid" "$issue" needs-human 'agent:rework,pr_approved'
+    echo "Rework made no progress; human input is required." >&2; exit 1
+  fi
   force=''
-  mr=$(factory_api GET "$mr_path")
-  reviewed_head=$(printf '%s' "$mr" | jq -er '.sha')
-  [ "$reviewed_head" = "$head" ] || {
-    factory_labels "$mr_iid" "$issue" needs-human 'pr_approved'
-    echo "MR changed between validation and review; no approval will be armed." >&2; exit 1;
-  }
-  if printf '%s' "$mr" | jq -e '.state != "opened" or .draft == true or any(.labels[]?; . == "blocked" or . == "needs-human" or . == "agent:skip")' >/dev/null; then
-    echo "MR was paused during review; approval is not armed."; exit 0
+  decision=''
+fi
+mr=$(factory_api GET "$mr_path")
+head=$(printf '%s' "$mr" | jq -er '.sha')
+factory_labels "$mr_iid" "$issue" ai_validating 'agent:rework,pr_approved,validation_failed'
+validation_status=0
+bash .dmtools/scripts/gitlab-factory-lifecycle.sh validate "$mr_iid" "$issue" || validation_status=$?
+if [ "$validation_status" -eq 75 ]; then exit 0; fi
+if [ "$validation_status" -eq 74 ]; then
+  factory_labels "$mr_iid" "$issue" validation_failed 'ai_validating,pr_approved,agent:review'
+  echo "Validation failed. Add agent:rework explicitly to request fixes."
+  exit 0
+fi
+[ "$validation_status" -eq 0 ] || exit "$validation_status"
+factory_api POST "$mr_path/notes" --data-urlencode "body=<!-- dmtools-validation:$head:success -->" >/dev/null
+factory_labels "$mr_iid" "$issue" 'ai_validated,agent:review' 'ai_validating,agent:rework'
+if ! bash .dmtools/scripts/gitlab-factory-job.sh "$job_issue" "review-$round" \
+  bash .dmtools/scripts/gitlab-factory-lifecycle.sh review "$mr_iid"; then
+  factory_labels "$mr_iid" "$issue" needs-human 'pr_approved'
+  exit 1
+fi
+force=''
+mr=$(factory_api GET "$mr_path")
+reviewed_head=$(printf '%s' "$mr" | jq -er '.sha')
+[ "$reviewed_head" = "$head" ] || {
+  factory_labels "$mr_iid" "$issue" needs-human 'pr_approved'
+  echo "MR changed between validation and review; no approval will be armed." >&2; exit 1;
+}
+if printf '%s' "$mr" | jq -e '.state != "opened" or .draft == true or any(.labels[]?; . == "blocked" or . == "needs-human" or . == "agent:skip")' >/dev/null; then
+  echo "MR was paused during review; approval is not armed."; exit 0
+fi
+if [ -n "$issue" ]; then
+  ticket=$(factory_api GET "/projects/$CI_PROJECT_ID/issues/$issue")
+  if printf '%s' "$ticket" | jq -e '.state != "opened" or any(.labels[]?; . == "blocked" or . == "needs-human" or . == "agent:skip")' >/dev/null; then
+    echo "Issue was paused during review; approval is not armed."; exit 0
   fi
-  if [ -n "$issue" ]; then
-    ticket=$(factory_api GET "/projects/$CI_PROJECT_ID/issues/$issue")
-    if printf '%s' "$ticket" | jq -e '.state != "opened" or any(.labels[]?; . == "blocked" or . == "needs-human" or . == "agent:skip")' >/dev/null; then
-      echo "Issue was paused during review; approval is not armed."; exit 0
-    fi
-  fi
-  notes=$(factory_list "$mr_path/notes")
-  approved=$(printf '%s' "$notes" | jq --arg head "$reviewed_head" --argjson reviewer "$reviewer_id" '
-    [.[] | select(.author.id == $reviewer) | select(.body == ("<!-- dmtools-review:" + $head + ":approve -->") or
-      .body == ("<!-- dmtools-review:" + $head + ":request_changes -->"))] | sort_by(.id) | last |
-      .body == ("<!-- dmtools-review:" + $head + ":approve -->")')
-  discussions=$(factory_list "$mr_path/discussions")
-  unresolved=$(printf '%s' "$discussions" | jq '[.[] | select(any(.notes[]; .resolvable == true and .resolved == false))] | length')
-  if [ "$approved" = true ] && [ "$unresolved" -eq 0 ]; then
-    factory_labels "$mr_iid" "$issue" 'ai_pr_reviewed,pr_approved' 'agent:dev,agent:review,agent:rework,ai_validating'
-    echo "MR !$mr_iid is approved and validated. It remains OPEN for a human to merge."
-    exit 0
-  fi
-  factory_labels "$mr_iid" "$issue" 'ai_pr_reviewed,agent:rework' 'agent:review,pr_approved'
-done
-factory_labels "$mr_iid" "$issue" needs-human 'agent:dev,agent:review,agent:rework,pr_approved'
-echo "Automatic lifecycle exhausted its retry budget; human input is required." >&2
-exit 1
+fi
+notes=$(factory_list "$mr_path/notes")
+approved=$(printf '%s' "$notes" | jq --arg head "$reviewed_head" --argjson reviewer "$reviewer_id" '
+  [.[] | select(.author.id == $reviewer) | select(.body == ("<!-- dmtools-review:" + $head + ":approve -->") or
+    .body == ("<!-- dmtools-review:" + $head + ":request_changes -->"))] | sort_by(.id) | last |
+    .body == ("<!-- dmtools-review:" + $head + ":approve -->")')
+discussions=$(factory_list "$mr_path/discussions")
+unresolved=$(printf '%s' "$discussions" | jq '[.[] | select(any(.notes[]; .resolvable == true and .resolved == false))] | length')
+if [ "$approved" = true ] && [ "$unresolved" -eq 0 ]; then
+  factory_labels "$mr_iid" "$issue" 'ai_pr_reviewed,pr_approved' 'agent:dev,agent:review,agent:rework,ai_validating'
+  echo "MR !$mr_iid is approved and validated. It remains OPEN for a human to merge."
+  exit 0
+fi
+factory_labels "$mr_iid" "$issue" ai_pr_reviewed 'agent:review,pr_approved'
+echo "Review requires changes. Add agent:rework explicitly to request fixes."
