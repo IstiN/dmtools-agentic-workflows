@@ -16,7 +16,24 @@ if [[ ! "$mr_iid" =~ ^[0-9]+$ ]]; then
 fi
 
 context=$(mktemp -d)
-trap 'rm -f "$context/credential-helper" "$context/merge_request.json" "$context/discussions.json" "$context/pr_discussions_raw.json" "$context/changes.json" "$context/runner.json" "$context/agent.log" "$context/ci_failures.json"; rmdir "$context"' EXIT
+orchestrator="$PWD"
+checkout="$context/checkout"
+common="$orchestrator/.dmtools/scripts/gitlab-factory-common.sh"
+cleanup_rework() {
+  local status=$?
+  trap - EXIT
+  cd "$orchestrator"
+  if [ -e "$checkout" ]; then
+    if ! git worktree remove --force "$checkout"; then
+      echo "Failed to remove the isolated rework worktree: $checkout" >&2
+      exit 1
+    fi
+  fi
+  rm -f "$context/credential-helper" "$context/merge_request.json" "$context/discussions.json" "$context/pr_discussions_raw.json" "$context/changes.json" "$context/runner.json" "$context/agent.log" "$context/ci_failures.json"
+  rmdir "$context"
+  exit "$status"
+}
+trap cleanup_rework EXIT
 export DMTOOLS_REWORK_CONTEXT="$context"
 cp .dmtools/runners/fa-rework.json "$context/runner.json"
 
@@ -77,6 +94,7 @@ case "$remote_url" in
   https://*) ;;
   *) echo "Refusing to send the development token to a non-HTTPS Git remote." >&2; exit 1 ;;
 esac
+git_remote_url="https://$GIT_HTTPS_USERNAME@${remote_url#https://}"
 cat > "$context/credential-helper" <<'CREDENTIAL_HELPER'
 #!/bin/sh
 if [ "$1" = get ]; then
@@ -88,21 +106,21 @@ git_authenticated() {
   GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c credential.helper="!$context/credential-helper" "$@"
 }
 
-if [ -n "$(git status --porcelain --untracked-files=all -- . ':!input' ':!outputs' ':!logs')" ]; then
-  echo "Rework requires a clean checkout before selecting the MR source branch." >&2
-  exit 1
-fi
-initial_sha=$(git rev-parse HEAD)
-git_authenticated fetch --no-tags "$remote_url" "refs/heads/$branch"
-git switch --detach FETCH_HEAD
-if [ "$(git rev-parse HEAD)" != "$head_sha" ]; then
+echo "Rework Git account: $GIT_HTTPS_USERNAME (development token)."
+git_authenticated fetch --no-tags "$git_remote_url" "refs/heads/$branch"
+if [ "$(git rev-parse FETCH_HEAD)" != "$head_sha" ]; then
   echo "MR source branch changed while preparing rework. Retry against its current head." >&2
   exit 1
 fi
-git switch -C "$branch"
+if ! git_authenticated push --dry-run --porcelain "$git_remote_url" "$head_sha:refs/heads/$branch"; then
+  echo "Development-token Git push authorization failed before rework. Check GITLAB_DEV_TOKEN write_repository scope and project access." >&2
+  exit 1
+fi
+git worktree add --detach "$checkout" "$head_sha"
+cd "$checkout"
 gitlab_api GET "$mr_path/changes" > "$context/changes.json"
-if [ -f .dmtools/scripts/gitlab-factory-common.sh ]; then
-  . .dmtools/scripts/gitlab-factory-common.sh
+if [ -f "$common" ]; then
+  . "$common"
   pipelines=$(factory_list "/projects/$CI_PROJECT_ID/pipelines?sha=$head_sha&status=failed")
   pipeline_id=$(printf '%s' "$pipelines" | jq -r --arg sha "$head_sha" '
     [.[] | select(.sha == $sha and .status == "failed")] | sort_by(.id) | last | .id // ""')
@@ -153,8 +171,8 @@ while IFS= read -r reply_file; do
   fi
 done < <(jq -r '.replies[].reply' outputs/review_replies.json)
 
-if [ "$(git branch --show-current)" != "$branch" ]; then
-  echo "Rework left the MR source branch; refusing to publish changes." >&2
+if [ -n "$(git branch --show-current)" ]; then
+  echo "Rework switched branches; refusing to publish changes." >&2
   exit 1
 fi
 git merge-base --is-ancestor "$head_sha" HEAD
@@ -179,7 +197,7 @@ if [ "$(printf '%s' "$current_mr" | jq -r '.sha')" != "$head_sha" ]; then
   echo "MR head changed during rework; refusing to overwrite newer work." >&2
   exit 1
 fi
-git_authenticated push --porcelain "$remote_url" "HEAD:refs/heads/$branch"
+git_authenticated push --porcelain "$git_remote_url" "HEAD:refs/heads/$branch"
 published_mr=$(gitlab_api GET "$mr_path")
 if [ "$(printf '%s' "$published_mr" | jq -r '.sha')" != "$(git rev-parse HEAD)" ]; then
   echo "GitLab MR head does not match the rework commit; review threads remain open." >&2
@@ -199,5 +217,4 @@ done < <(jq -c '.replies[]' outputs/review_replies.json)
 gitlab_api POST "$mr_path/notes" --data-urlencode "body@outputs/response.md" >/dev/null
 gitlab_api PUT "$mr_path" --data-urlencode 'add_labels=ai_developed' \
   --data-urlencode 'remove_labels=agent:rework' >/dev/null
-git switch --detach "$initial_sha"
 echo "Updated existing GitLab MR !$mr_iid on $branch and replied to every open review thread."

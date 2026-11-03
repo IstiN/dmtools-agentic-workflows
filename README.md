@@ -45,6 +45,16 @@ request is consumed once, then the updated MR is validated and reviewed.
 Subsequent review feedback waits for another explicit request.
 Review uses an isolated temporary Git worktree at the MR head, so session,
 skill and other review-generated files cannot dirty the orchestration checkout.
+Rework also uses an isolated detached worktree at the exact source commit and
+pushes explicitly to the existing MR branch. Installer changes in the original
+CI checkout are preserved but do not block rework or enter its commit. Both
+worktrees are removed on success and failure; stale-head and thread-reply
+publication checks remain enforced.
+Rework uses a developer-username-qualified HTTPS URL and a development-token
+credential helper for fetch/push. This avoids Runner rewriting a bare project
+URL to its read-only CI job token. A non-writing push authorization check runs
+before the AI agent. GitLab API list failures abort the operation rather than
+being interpreted as an empty list of failed checks.
 
 | Workflow | What it does | Caller stub |
 |---|---|---|

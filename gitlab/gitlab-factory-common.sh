@@ -32,8 +32,12 @@ factory_list() {
   local path="$1" page=1 batch result='[]' separator='?'
   [[ "$path" != *'?'* ]] || separator='&'
   while :; do
-    batch=$(factory_api GET "$path${separator}per_page=100&page=$page")
-    result=$(jq -cn --argjson previous "$result" --argjson batch "$batch" '$previous + $batch')
+    batch=$(factory_api GET "$path${separator}per_page=100&page=$page") || return 1
+    printf '%s' "$batch" | jq -e 'type == "array"' >/dev/null || {
+      echo "GitLab factory list response is not an array: $path" >&2
+      return 1
+    }
+    result=$(jq -cn --argjson previous "$result" --argjson batch "$batch" '$previous + $batch') || return 1
     [ "$(printf '%s' "$batch" | jq 'length')" -lt 100 ] && break
     page=$((page + 1))
   done
