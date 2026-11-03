@@ -29,8 +29,10 @@ cleanup_rework() {
       exit 1
     fi
   fi
-  rm -f "$context/credential-helper" "$context/merge_request.json" "$context/discussions.json" "$context/pr_discussions_raw.json" "$context/changes.json" "$context/runner.json" "$context/agent.log" "$context/ci_failures.json" "$context/replies.tsv"
-  rmdir "$context"
+  if ! rm -rf -- "$context"; then
+    echo "Failed to remove the temporary rework context: $context" >&2
+    exit 1
+  fi
   exit "$status"
 }
 trap cleanup_rework EXIT

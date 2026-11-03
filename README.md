@@ -50,6 +50,10 @@ pushes explicitly to the existing MR branch. Installer changes in the original
 CI checkout are preserved but do not block rework or enter its commit. Both
 worktrees are removed on success and failure; stale-head and thread-reply
 publication checks remain enforced.
+After removing each worktree, cleanup removes its entire temporary context,
+including extra agent-generated files and hidden directories, without following
+symlinks. Successful cleanup preserves the original operation's exit status;
+cleanup errors are reported explicitly.
 Rework uses a developer-username-qualified HTTPS URL and a development-token
 credential helper for fetch/push. This avoids Runner rewriting a bare project
 URL to its read-only CI job token. A non-writing push authorization check runs
