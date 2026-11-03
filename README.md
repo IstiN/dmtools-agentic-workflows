@@ -70,6 +70,11 @@ such as `.cursor/skills`, are restored unless the agent changed them, so they
 never become an MR by themselves. Blocker or needs-input output, an empty issue,
 or a run without repository changes marks the issue `needs-human` and opens no
 MR.
+Review inline findings are anchored from the MR diff: added lines use
+`new_line`, removed lines `old_line`, and unchanged context lines both (GitLab
+rejects context positions without `old_line`). Renamed files keep their old and
+new paths. A finding on a line outside the MR diff is posted as a general MR
+thread with its `path:line` instead of failing the review.
 
 | Workflow | What it does | Caller stub |
 |---|---|---|
