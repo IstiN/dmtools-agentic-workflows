@@ -55,6 +55,9 @@ credential helper for fetch/push. This avoids Runner rewriting a bare project
 URL to its read-only CI job token. A non-writing push authorization check runs
 before the AI agent. GitLab API list failures abort the operation rather than
 being interpreted as an empty list of failed checks.
+Rework may finish detached or on the exact existing MR source branch. Any
+other branch, unrelated commit history or concurrent remote-head update blocks
+publication; the push target is always the existing MR source branch.
 
 | Workflow | What it does | Caller stub |
 |---|---|---|

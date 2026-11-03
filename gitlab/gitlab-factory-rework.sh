@@ -171,11 +171,15 @@ while IFS= read -r reply_file; do
   fi
 done < <(jq -r '.replies[].reply' outputs/review_replies.json)
 
-if [ -n "$(git branch --show-current)" ]; then
-  echo "Rework switched branches; refusing to publish changes." >&2
+current_branch=$(git branch --show-current)
+if [ -n "$current_branch" ] && [ "$current_branch" != "$branch" ]; then
+  echo "Rework switched to unexpected branch '$current_branch' (expected '$branch' or detached HEAD); refusing to publish changes." >&2
   exit 1
 fi
-git merge-base --is-ancestor "$head_sha" HEAD
+if ! git merge-base --is-ancestor "$head_sha" HEAD; then
+  echo "Rework HEAD no longer descends from the original MR head; refusing to publish changes." >&2
+  exit 1
+fi
 git config user.name "DMTools Factory"
 git config user.email "dmtools-factory@users.noreply.gitlab.com"
 git add -A -- . ':!input' ':!outputs' ':!logs'
