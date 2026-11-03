@@ -62,6 +62,12 @@ After a successful push, rework verifies the Git branch directly and waits up to
 55 seconds for GitLab's asynchronous MR head metadata to catch up before replying
 to or resolving discussions. A timeout explicitly reports that the push succeeded
 and leaves discussions open; concurrent branch changes stop publication checks.
+Before pushing, rework matches each agent reply to one open discussion by
+`threadId` (or by any note ID in `inReplyToId`), accepts absolute or relative
+reply files inside `outputs/review_replies/` and inline reply text, and ignores
+replies to non-thread notes such as review summaries. A missing, duplicate,
+empty or out-of-folder reply fails before the push and lists every problem,
+together with the open thread IDs and the agent's reply entries.
 Development reads the GitLab issue title, link and description, excluding the
 managed Machine jobs block, through the GitLab API. It passes them to the agent
 as the explicit standalone request instead of `--inputTicketId`, because DMTools
