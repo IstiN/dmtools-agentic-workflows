@@ -58,6 +58,10 @@ being interpreted as an empty list of failed checks.
 Rework may finish detached or on the exact existing MR source branch. Any
 other branch, unrelated commit history or concurrent remote-head update blocks
 publication; the push target is always the existing MR source branch.
+After a successful push, rework verifies the Git branch directly and waits up to
+55 seconds for GitLab's asynchronous MR head metadata to catch up before replying
+to or resolving discussions. A timeout explicitly reports that the push succeeded
+and leaves discussions open; concurrent branch changes stop publication checks.
 
 | Workflow | What it does | Caller stub |
 |---|---|---|

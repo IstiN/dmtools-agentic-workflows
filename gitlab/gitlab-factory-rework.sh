@@ -201,12 +201,39 @@ if [ "$(printf '%s' "$current_mr" | jq -r '.sha')" != "$head_sha" ]; then
   echo "MR head changed during rework; refusing to overwrite newer work." >&2
   exit 1
 fi
-git_authenticated push --porcelain "$git_remote_url" "HEAD:refs/heads/$branch"
-published_mr=$(gitlab_api GET "$mr_path")
-if [ "$(printf '%s' "$published_mr" | jq -r '.sha')" != "$(git rev-parse HEAD)" ]; then
-  echo "GitLab MR head does not match the rework commit; review threads remain open." >&2
+remote_head=$(git_authenticated ls-remote --exit-code "$git_remote_url" "refs/heads/$branch" | cut -f1)
+if [ "$remote_head" != "$head_sha" ]; then
+  echo "MR source branch changed during rework; refusing to overwrite newer work." >&2
   exit 1
 fi
+published_head=$(git rev-parse HEAD)
+git_authenticated push --porcelain "$git_remote_url" "HEAD:refs/heads/$branch"
+for ((attempt=1; attempt<=12; attempt++)); do
+  remote_head=$(git_authenticated ls-remote --exit-code "$git_remote_url" "refs/heads/$branch" | cut -f1)
+  if [ "$remote_head" != "$published_head" ]; then
+    echo "MR source branch no longer matches published commit $published_head (observed $remote_head); review threads remain open." >&2
+    exit 1
+  fi
+  published_mr=$(gitlab_api GET "$mr_path")
+  printf '%s' "$published_mr" | jq -e --arg branch "$branch" --arg project "$CI_PROJECT_ID" '
+    .state == "opened" and .source_branch == $branch and (.source_project_id | tostring) == $project
+  ' >/dev/null || {
+    echo "MR was closed or its source changed after publication; review threads remain open." >&2
+    exit 1
+  }
+  observed_head=$(printf '%s' "$published_mr" | jq -r '.sha // ""')
+  [ "$observed_head" = "$published_head" ] && break
+  if [ -n "$observed_head" ] && [ "$observed_head" != "$head_sha" ]; then
+    echo "MR head changed to unexpected commit $observed_head after publication; review threads remain open." >&2
+    exit 1
+  fi
+  if [ "$attempt" -eq 12 ]; then
+    echo "Timed out waiting for GitLab MR metadata to reach published commit $published_head (observed ${observed_head:-empty}); the push succeeded, but review threads remain open." >&2
+    exit 1
+  fi
+  echo "Waiting for GitLab MR metadata to reach $published_head (attempt $attempt/12)."
+  sleep 5
+done
 
 while IFS= read -r reply; do
   thread=$(printf '%s' "$reply" | jq -r '.threadId')
