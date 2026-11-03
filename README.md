@@ -62,6 +62,14 @@ After a successful push, rework verifies the Git branch directly and waits up to
 55 seconds for GitLab's asynchronous MR head metadata to catch up before replying
 to or resolving discussions. A timeout explicitly reports that the push succeeded
 and leaves discussions open; concurrent branch changes stop publication checks.
+Development reads the GitLab issue title, link and description, excluding the
+managed Machine jobs block, through the GitLab API. It passes them to the agent
+as the explicit standalone request instead of `--inputTicketId`, because DMTools
+has no GitLab tracker. Files that the installer dirtied before the agent ran,
+such as `.cursor/skills`, are restored unless the agent changed them, so they
+never become an MR by themselves. Blocker or needs-input output, an empty issue,
+or a run without repository changes marks the issue `needs-human` and opens no
+MR.
 
 | Workflow | What it does | Caller stub |
 |---|---|---|

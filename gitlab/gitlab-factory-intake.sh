@@ -2,7 +2,51 @@ if [ "${1:-}" = --develop ]; then
   iid="${2:?Issue IID}"
   config="${3:?Development runner}"
   base_sha=$(git rev-parse HEAD)
-  run_agent "$config" --inputTicketId "$iid"
+  develop_context=$(mktemp -d)
+  trap 'rm -rf "$develop_context"' EXIT
+
+  # Paths already changed by CI setup (for example .cursor/skills from the DMTools installer) are not issue work.
+  while IFS= read -r -d '' entry; do
+    path="${entry:3}"
+    case "${entry:0:1}" in R|C) IFS= read -r -d '' _ ;; esac
+    hash='-'
+    [ -f "$path" ] && hash=$(git hash-object -- "$path")
+    printf '%s\0%s\0' "$hash" "$path"
+  done < <(git status --porcelain=v1 -z --untracked-files=all) > "$develop_context/preexisting"
+
+  # DMTools has no GitLab tracker, so the issue is passed to the agent as its explicit request.
+  issue=$(gitlab_api GET "$CI_API_V4_URL/projects/$CI_PROJECT_ID/issues/$iid" --header "PRIVATE-TOKEN: $GITLAB_TOKEN")
+  request=$(printf '%s' "$issue" | jq -r '
+    ((.description // "") | gsub("<!-- dmtools-machine-jobs -->[\\s\\S]*?<!-- /dmtools-machine-jobs -->"; "")
+      | gsub("^\\s+|\\s+$"; "")) as $body
+    | if ((.title // "") | test("\\S")) or ($body | test("\\S")) then
+        "Implement GitLab issue #\(.iid): \(.title // "")\n\(.web_url // "")\n\n\($body)"
+      else "" end')
+  if [ -z "$request" ]; then
+    echo "Issue #$iid has no title or description to implement." >&2
+    exit 1
+  fi
+  runner="$develop_context/$(basename "$config")"
+  jq --arg request "$request" '.params.agentParams.request = $request' "$config" > "$runner"
+  rm -f outputs/blocked.json outputs/needs-input.md outputs/response.md
+  run_agent "$runner" | tee "$develop_context/agent.log"
+  if [ -s outputs/blocked.json ] || [ -s outputs/needs-input.md ] ||
+    { [ -f outputs/response.md ] && grep -q '^BLOCKED' outputs/response.md; } ||
+    grep -q '"result": "BLOCKED' "$develop_context/agent.log"; then
+    echo "Development agent reported missing input or a blocker for issue #$iid; no MR will be created." >&2
+    exit 1
+  fi
+
+  while IFS= read -r -d '' hash && IFS= read -r -d '' path; do
+    current='-'
+    [ -f "$path" ] && current=$(git hash-object -- "$path")
+    [ "$current" = "$hash" ] || continue
+    if git cat-file -e "HEAD:$path" 2>/dev/null; then
+      git checkout HEAD -- "$path"
+    else
+      rm -f -- "$path"
+    fi
+  done < "$develop_context/preexisting"
   publish_issue_changes "$iid" "$base_sha"
   exit 0
 fi
