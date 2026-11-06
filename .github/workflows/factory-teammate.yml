@@ -642,6 +642,14 @@ jobs:
           AI_TEAMMATE_DISPLAY_KEY: GH-${{ needs.guard.outputs.anchor }}
           AI_TEAMMATE_CONCURRENCY_KEY: ${{ needs.guard.outputs.anchor }}
           ZAI_CODE_KEY: ${{ secrets.ZAI_CODE_KEY }}
+          # gh-1381 fallback keys: literal pass-through — absent secrets resolve to
+          # empty strings, which the fa provider resolver treats as "no fallback"
+          # (it probes ZAI_CODE_KEY_1.._5 for same-provider failover entries).
+          ZAI_CODE_KEY_1: ${{ secrets.ZAI_CODE_KEY_1 }}
+          ZAI_CODE_KEY_2: ${{ secrets.ZAI_CODE_KEY_2 }}
+          ZAI_CODE_KEY_3: ${{ secrets.ZAI_CODE_KEY_3 }}
+          ZAI_CODE_KEY_4: ${{ secrets.ZAI_CODE_KEY_4 }}
+          ZAI_CODE_KEY_5: ${{ secrets.ZAI_CODE_KEY_5 }}
           KIMI_REVIEW_KEY: ${{ secrets.KIMI_REVIEW_KEY }}
           ENV_VAR_DEV_QUEUE: ${{ secrets.ENV_VAR_DEV_QUEUE || vars.ENV_VAR_DEV_QUEUE }}
           ENV_VAR_REVIEW_QUEUE: ${{ secrets.ENV_VAR_REVIEW_QUEUE || vars.ENV_VAR_REVIEW_QUEUE }}
