@@ -16,6 +16,76 @@ never need edits to bump a version.
 
 ## What lives here
 
+### GitLab factory templates
+
+The [gitlab/](./gitlab/) directory is the source of the GitLab factory scripts
+and pipeline templates consumed by the DMTools setup UI. The UI downloads these
+files from the configured workflow repository/ref; it has no bundled script
+fallback. Test fixtures in the UI repository are offline snapshots, not runtime
+sources. Publish additions to the configured ref before deploying the updated UI.
+
+- [gitlab-auto-ci.yml](./gitlab/gitlab-auto-ci.yml): automatic lifecycle pipeline.
+  Intake runs on a ten-minute schedule or manually. Quality completion requests
+  reconciliation through the API. Direct webhook-triggered pipelines are rejected.
+- `gitlab-factory-{common,job,lifecycle,intake,rework,select-teammate}.sh`:
+  shared API/progress helpers, lifecycle, intake, existing-MR rework and account
+  selection. Development and review use separate tokens when configured.
+- The original `gitlab-ci.yml`, poller, publisher and `gitlab-quality-*.yml`
+  remain available for existing consumers.
+
+Automatic lifecycle setup creates the managed schedule before removing only
+legacy factory-managed Issue/MR webhooks and their trigger tokens. Unrelated
+hooks, schedules and triggers are preserved. Assignment and label changes are
+picked up on the next scheduled tick (up to ten minutes); progress updates do
+not create pipelines. Manual runs remain available for immediate intake.
+Approved MRs stay open for human merge.
+Review feedback and validation failures do not start rework automatically.
+Add `agent:rework` to the issue or MR, or select the manual rework leg; each
+request is consumed once, then the updated MR is validated and reviewed.
+Subsequent review feedback waits for another explicit request.
+Review uses an isolated temporary Git worktree at the MR head, so session,
+skill and other review-generated files cannot dirty the orchestration checkout.
+Rework also uses an isolated detached worktree at the exact source commit and
+pushes explicitly to the existing MR branch. Installer changes in the original
+CI checkout are preserved but do not block rework or enter its commit. Both
+worktrees are removed on success and failure; stale-head and thread-reply
+publication checks remain enforced.
+After removing each worktree, cleanup removes its entire temporary context,
+including extra agent-generated files and hidden directories, without following
+symlinks. Successful cleanup preserves the original operation's exit status;
+cleanup errors are reported explicitly.
+Rework uses a developer-username-qualified HTTPS URL and a development-token
+credential helper for fetch/push. This avoids Runner rewriting a bare project
+URL to its read-only CI job token. A non-writing push authorization check runs
+before the AI agent. GitLab API list failures abort the operation rather than
+being interpreted as an empty list of failed checks.
+Rework may finish detached or on the exact existing MR source branch. Any
+other branch, unrelated commit history or concurrent remote-head update blocks
+publication; the push target is always the existing MR source branch.
+After a successful push, rework verifies the Git branch directly and waits up to
+55 seconds for GitLab's asynchronous MR head metadata to catch up before replying
+to or resolving discussions. A timeout explicitly reports that the push succeeded
+and leaves discussions open; concurrent branch changes stop publication checks.
+Before pushing, rework matches each agent reply to one open discussion by
+`threadId` (or by any note ID in `inReplyToId`), accepts absolute or relative
+reply files inside `outputs/review_replies/` and inline reply text, and ignores
+replies to non-thread notes such as review summaries. A missing, duplicate,
+empty or out-of-folder reply fails before the push and lists every problem,
+together with the open thread IDs and the agent's reply entries.
+Development reads the GitLab issue title, link and description, excluding the
+managed Machine jobs block, through the GitLab API. It passes them to the agent
+as the explicit standalone request instead of `--inputTicketId`, because DMTools
+has no GitLab tracker. Files that the installer dirtied before the agent ran,
+such as `.cursor/skills`, are restored unless the agent changed them, so they
+never become an MR by themselves. Blocker or needs-input output, an empty issue,
+or a run without repository changes marks the issue `needs-human` and opens no
+MR.
+Review inline findings are anchored from the MR diff: added lines use
+`new_line`, removed lines `old_line`, and unchanged context lines both (GitLab
+rejects context positions without `old_line`). Renamed files keep their old and
+new paths. A finding on a line outside the MR diff is posted as a general MR
+thread with its `path:line` instead of failing the review.
+
 | Workflow | What it does | Caller stub |
 |---|---|---|
 | `factory-teammate.yml` | The issue-driven AI teammate: dev / review / rework legs, sessions, verdict, memory. Runs the agent pack (`bug_development@latest` …) from the dmtools-agents release selected by `factory_ref` / `vars.AGENTS_VERSION`. | `ai-teammate.yml` |
