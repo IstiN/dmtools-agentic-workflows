@@ -794,8 +794,12 @@ jobs:
             exit 0
           fi
           TAIL="$(tail -c 800 "$TRACE" 2>/dev/null || true)"
-          if ! printf '%s' "$TAIL" | grep -qiE 'provider chain exhausted'; then
-            echo "no provider-chain signature in the trace tail — verdict-apply path proceeds"
+          # Classification = the gh-1087 vocabulary FAMILIES (provider-death
+          # family: exhausted chain / quota & billing / 429-led outage), NOT a
+          # single cause - per the loop-ideas review: one hardcoded signature
+          # was rejected. Unknown tails fall through to the gh-305 path.
+          if ! printf '%s' "$TAIL" | grep -qiE 'provider chain exhausted|usage[ _-]?limit|quota|billing|insufficient (credit|quota|balance)|429: rate limit|weekly .{0,12}usage limit'; then
+            echo "no provider-death-family signature in the trace tail — verdict-apply path proceeds"
             exit 0
           fi
           NUM="${NUMBER_PR:-$NUMBER_ISSUE}"
