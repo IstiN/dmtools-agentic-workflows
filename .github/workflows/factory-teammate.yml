@@ -140,6 +140,21 @@ on:
       KIMI_REVIEW_KEY:
         description: 'kimi API key (review provider, first in the queue)'
         required: false
+      ZAI_CODE_KEY_1:
+        description: 'z.ai fallback key slot 1 (separate account) - lands in the job env as ZAI_CODE_KEY_1 for the fa provider resolver (gh-1381)'
+        required: false
+      ZAI_CODE_KEY_2:
+        description: 'z.ai fallback key slot 2 - see ZAI_CODE_KEY_1.'
+        required: false
+      ZAI_CODE_KEY_3:
+        description: 'z.ai fallback key slot 3 - see ZAI_CODE_KEY_1.'
+        required: false
+      ZAI_CODE_KEY_4:
+        description: 'z.ai fallback key slot 4 - see ZAI_CODE_KEY_1.'
+        required: false
+      ZAI_CODE_KEY_5:
+        description: 'z.ai fallback key slot 5 - see ZAI_CODE_KEY_1.'
+        required: false
       CUSTOM_PROVIDER_KEY1:
         description: 'Generic provider-key slot 1 — value lands in the agent job env under CUSTOM_PROVIDER_KEY1_NAME. The factory never knows key names; the caller stub documents which repo secret maps here.'
         required: false
