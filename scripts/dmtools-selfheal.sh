@@ -16,8 +16,16 @@
   ls -la "${HOME}/.dmtools/bin" 2>/dev/null | head -8 || true
   if ! dmtools --version >/dev/null 2>&1; then
     echo "dmtools on PATH is broken — force reinstall (${DMTOOLS_VERSION})"
-    curl -fsSL "https://github.com/epam/dmtools-dart/releases/download/${DMTOOLS_VERSION}/install.sh" \
-      -o /tmp/dmtools-heal.sh
+    if ! curl -fsSL --connect-timeout 15 --max-time 45 --retry 2 --retry-delay 2 \
+        "https://github.com/epam/dmtools-dart/releases/download/${DMTOOLS_VERSION}/install.sh" \
+        -o /tmp/dmtools-heal.sh; then
+      echo "browser_download failed; falling back to GitHub Releases API for epam/dmtools-dart@${DMTOOLS_VERSION}/install.sh" >&2
+      ASSET_URL="$(gh api "repos/epam/dmtools-dart/releases/tags/${DMTOOLS_VERSION}" --jq '.assets[] | select(.name == "install.sh") | .url')"
+      curl -fsSL --connect-timeout 15 --max-time 45 --retry 2 --retry-delay 2 \
+        -H "Accept: application/octet-stream" \
+        ${GH_TOKEN:+-H "Authorization: Bearer ${GH_TOKEN}"} \
+        "${ASSET_URL}" -o /tmp/dmtools-heal.sh
+    fi
     bash /tmp/dmtools-heal.sh "${DMTOOLS_VERSION}"
     export PATH="${HOME}/.dmtools/bin:${PATH}"
     hash -r

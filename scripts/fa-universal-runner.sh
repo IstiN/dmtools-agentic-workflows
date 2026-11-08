@@ -179,11 +179,20 @@ install_dmtools_fast() {
   local ver="${DMTOOLS_VERSION:-latest}"
   if [ "${ver}" = "latest" ] || [ -z "${ver}" ]; then
     url="https://github.com/epam/dmtools-dart/releases/latest/download/${asset}"
+    rel_ep="repos/epam/dmtools-dart/releases/latest"
   else
     case "${ver}" in v*) ;; *) ver="v${ver}" ;; esac
     url="https://github.com/epam/dmtools-dart/releases/download/${ver}/${asset}"
+    rel_ep="repos/epam/dmtools-dart/releases/tags/${ver}"
   fi
-  curl -fsSL "${url}" -o "${tmp}/${asset}"
+  if ! curl -fsSL --connect-timeout 15 --max-time 45 --retry 2 --retry-delay 2 "${url}" -o "${tmp}/${asset}"; then
+    echo "browser_download failed; falling back to GitHub Releases API (${rel_ep}/${asset})" >&2
+    asset_api_url="$(gh api "${rel_ep}" --jq ".assets[] | select(.name == \"${asset}\") | .url")"
+    curl -fsSL --connect-timeout 15 --max-time 60 --retry 2 --retry-delay 2 \
+      -H "Accept: application/octet-stream" \
+      ${GH_TOKEN:+-H "Authorization: Bearer ${GH_TOKEN}"} \
+      "${asset_api_url}" -o "${tmp}/${asset}"
+  fi
   tar -xzf "${tmp}/${asset}" -C "${tmp}"
   src="${tmp}/dmtools"
   [ -d "${src}" ] || src="${tmp}/bundle"

@@ -207,9 +207,20 @@ jobs:
       - name: Install dmtools CLI (release bundle)
         # The installer ships as a release asset, version-locked to the
         # bundle it installs — no copy of install.sh in the target repo.
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
+          DMTOOLS_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN }}
         run: |
-          curl -fsSL "https://github.com/epam/dmtools-dart/releases/download/${DMTOOLS_TAG}/install.sh" \
-            -o /tmp/dmtools-install.sh
+          if ! curl -fsSL --connect-timeout 15 --max-time 45 --retry 2 --retry-delay 2 \
+              "https://github.com/epam/dmtools-dart/releases/download/${DMTOOLS_TAG}/install.sh" \
+              -o /tmp/dmtools-install.sh; then
+            echo "browser_download failed; falling back to GitHub Releases API for epam/dmtools-dart@${DMTOOLS_TAG}/install.sh" >&2
+            ASSET_URL="$(gh api "repos/epam/dmtools-dart/releases/tags/${DMTOOLS_TAG}" --jq '.assets[] | select(.name == "install.sh") | .url')"
+            curl -fsSL --connect-timeout 15 --max-time 45 --retry 2 --retry-delay 2 \
+              -H "Accept: application/octet-stream" \
+              ${GH_TOKEN:+-H "Authorization: Bearer ${GH_TOKEN}"} \
+              "${ASSET_URL}" -o /tmp/dmtools-install.sh
+          fi
           bash /tmp/dmtools-install.sh "${DMTOOLS_TAG}"
           echo "$HOME/.dmtools/bin" >> "$GITHUB_PATH"
 
