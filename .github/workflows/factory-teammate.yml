@@ -504,6 +504,9 @@ jobs:
         # bundle it installs — no copy of install.sh in the target repo.
         # Body: scripts/install-dmtools-cli.sh (stage-2 de-bloat — byte-extracted, behavior-identical;
         # delivered via the factory-kit fetch at the invocation ref).
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          DMTOOLS_GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/install-dmtools-cli.sh"
 
       # flutter-action treats a literal version string strictly — the words
