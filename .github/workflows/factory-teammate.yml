@@ -789,6 +789,47 @@ jobs:
         # delivered via the factory-kit fetch at the invocation ref).
         run: bash -e "${RUNNER_TEMP}/factory-kit/scripts/mark-job-done.sh"
 
+      - name: Park the lane on a provider-chain death (review runs only)
+        id: provider_park
+        # gh-1381 follow-up (flutter_agent_harness #2059 loop): when the review
+        # agent's session died of a provider-chain exhaustion, the verdict file
+        # is empty and the old flow cleared the trigger for an identical retry
+        # — 14+ identical legs overnight. Instead: classify the fa trace tail,
+        # PARK the lane (provider_quota label; shouldSkipForQuotaPark skips
+        # every dispatch lane; the probe cadence or a human lifts), leave the
+        # needs-human diagnosis to the apply step's gh-305 path on non-provider
+        # misses, and fail RED so the run never reads green.
+        if: ${{ always() && inputs.leg == 'review' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.SOURCE_GITHUB_TOKEN || github.token }}
+          NUMBER_PR: ${{ inputs.pr }}
+          NUMBER_ISSUE: ${{ inputs.issue }}
+        run: |
+          set -euo pipefail
+          TRACE="${GITHUB_WORKSPACE}/.dmtools/fa-trace.log"
+          if [ -f "${RUNNER_TEMP}/factory-setup/outputs/pr_review.json" ] || [ -f "outputs/pr_review.json" ]; then
+            echo "verdict file present — provider-park classification skipped"
+            exit 0
+          fi
+          TAIL="$(tail -c 800 "$TRACE" 2>/dev/null || true)"
+          # Classification = the gh-1087 vocabulary FAMILIES (provider-death
+          # family: exhausted chain / quota & billing / 429-led outage), NOT a
+          # single cause - per the loop-ideas review: one hardcoded signature
+          # was rejected. Unknown tails fall through to the gh-305 path.
+          if ! printf '%s' "$TAIL" | grep -qiE 'provider chain exhausted|usage[ _-]?limit|quota|billing|insufficient (credit|quota|balance)|429: rate limit|weekly .{0,12}usage limit'; then
+            echo "no provider-death-family signature in the trace tail — verdict-apply path proceeds"
+            exit 0
+          fi
+          NUM="${NUMBER_PR:-$NUMBER_ISSUE}"
+          if [ -z "$NUM" ]; then
+            echo "::error::provider-chain death but no ticket number — cannot park"
+            exit 1
+          fi
+          gh issue edit "$NUM" --add-label provider_quota --repo "$GITHUB_REPOSITORY"
+          gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" --body "🅿️ **Provider-chain exhausted — lane parked (\`provider_quota\`).** The review agent's session died of provider rate limits mid-review; re-deriving now would fail identically. The lane stays parked until the probe cadence or a human lifts the label."
+          echo "::error::Provider chain exhausted — lane parked (provider_quota); verdict apply skipped (gh-1381 follow-up)"
+          exit 1
+
       - name: Apply the review verdict (review runs only)
         # Zero-maintainer keystone: convert the review agent's verdict into
         # the label that drives the next machine step.
