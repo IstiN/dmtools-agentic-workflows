@@ -19,10 +19,45 @@ never need edits to bump a version.
 | Workflow | What it does | Caller stub |
 |---|---|---|
 | `factory-teammate.yml` | The issue-driven AI teammate: dev / review / rework legs, sessions, verdict, memory. Runs the agent pack (`bug_development@latest` …) from the dmtools-agents release selected by `factory_ref` / `vars.AGENTS_VERSION`. | `ai-teammate.yml` |
-| `factory-sm.yml` | The machine SM tick (`*/10` cron): reconciles PRs/issues against the loop rules — labels, validation arms, dispatches, merges. Runs the SM engine as a versioned agent pack (`sm_github@latest`). | `machine-sm.yml` |
+| `factory-sm.yml` | The machine SM tick (`*/10` cron): reconciles PRs/issues against the loop rules — labels, validation arms, dispatches, merges. Runs the SM engine as a versioned agent pack (`sm_github@latest`; `sm_gitlab@latest` with `scm-provider: gitlab` — see below). | `machine-sm.yml` |
 | `factory-merge.yml` | The event-driven merge bot: reacts to CI conclusions / label changes and squash-merges approved-green PRs within seconds (idempotent against the SM tick). | `machine-merge.yml` |
 | `factory-merge-trigger.yml` | The `pr_approved` merge bot: issue-labeled → linked PR → CLEAN → squash-merge → label removed → issue comment. Parameterized linking (body `Closes #N`, branch `N-…`/`gh-N`, PR-label reverse mapping). | `merge-trigger.yml` |
 | `factory-sm-kicker.yml` | The SM watchdog: dispatches an SM tick when the cron was missed; re-dispatches validation CI on codeless PR heads that carry no required contexts. | `sm-kicker.yml` |
+
+## The SM tick on a GitLab project (`sm_gitlab`)
+
+`factory-sm.yml` can reconcile a **GitLab** project instead of the calling
+GitHub repo. This is opt-in: `scm-provider` defaults to `github`, and existing
+callers get the same tick as before. The stub still lives in a GitHub repo,
+which provides the cron and `.dmtools/config.js`:
+
+```yaml
+jobs:
+  sm:
+    uses: IstiN/dmtools-agentic-workflows/.github/workflows/factory-sm.yml@<full-SHA>
+    with:
+      scm-provider: gitlab
+      gitlab-project: my-group/my-project          # nested groups OK; split on the last '/'
+      gitlab-base-path: https://gitlab.example.com # default https://gitlab.com (no /api/v4)
+      dryRun: ${{ github.event.inputs.dryRun || 'false' }}
+    secrets:
+      SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }} # still needed: release resolution + pack download
+      GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}               # api scope on the GitLab project
+```
+
+- The tick runs `dmtools run sm_gitlab@latest`. The pack comes from the same
+  `AGENTS_VERSION` release as `sm_github`. The project is passed as
+  `jobParams.owner`/`repo`, and dmtools gets `GITLAB_TOKEN`,
+  `GITLAB_BASE_PATH`, `GITLAB_WORKSPACE`, and `GITLAB_REPOSITORY`.
+- If the GitLab inputs or secret are missing, the first step fails before
+  anything is installed.
+- `sm_gitlab` currently enables only the dispatch rules. Merges, validation,
+  branch updates, and verdicts are still GitHub-only (see dmtools-agents
+  `docs/agents/sm_gitlab.md`). For that reason `silent-token`, `ci-workflow`,
+  `validation-checks`, and `state-publish` are ignored on a GitLab tick.
+  `machine-author`, `parallel-workers`, and `dryRun` still apply.
+- `.dmtools/config.js` `repository.owner`/`repo` take precedence over the
+  workflow input. Leave them unset, or point them at the GitLab project.
 
 ## The SM kicker: why every machine repo needs it
 

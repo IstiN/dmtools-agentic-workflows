@@ -14,7 +14,8 @@
 #
 #   vars.AGENTS_VERSION   — dmtools-agents release tag ('latest' or e.g.
 #                           'agents-rel-20260928-…'); the agent pack
-#                           (sm_github) is fetched from that release's
+#                           (sm_github, or sm_gitlab with scm-provider:
+#                           gitlab) is fetched from that release's
 #                           asset catalog via the dmtools registry
 #                           (DMTOOLS_PACK_REGISTRY). Default: latest.
 #   vars.DMTOOLS_VERSION  — dmtools-dart CLI release tag ('latest' or
@@ -27,8 +28,8 @@
 #
 # What it does: resolves the two version knobs, installs the dmtools CLI
 # (release asset, no repo file needed), then runs the SM rule engine as a
-# VERSIONED AGENT PACK (dmtools run sm_github@latest) against the target
-# repo's loop state — the pack carries smAgent.js + rules + engine closure,
+# VERSIONED AGENT PACK (dmtools run sm_github@latest, or sm_gitlab@latest)
+# against the target repo's loop state — the pack carries smAgent.js + rules + engine closure,
 # verified against the release's sha256 inventory.
 #
 # Caller stub:
@@ -63,6 +64,25 @@
 #         # typed (boolean) reusable inputs reject expressions; strings take them.
 #       secrets:
 #         SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+#
+# GitLab target (OPT-IN, scm-provider: gitlab): the same tick runs the
+# sm_gitlab@latest pack against a GitLab project instead of github.repository.
+# The stub still lives in a GitHub repo (it hosts .dmtools/config.js and the
+# cron); SOURCE_GITHUB_TOKEN is still needed to resolve/download releases.
+#   jobs:
+#     sm:
+#       uses: IstiN/dmtools-agentic-workflows/.github/workflows/factory-sm.yml@<ref>
+#       with:
+#         scm-provider: gitlab
+#         gitlab-project: my-group/my-project     # subgroups allowed
+#         gitlab-base-path: https://gitlab.example.com   # default gitlab.com
+#         dryRun: ${{ github.event.inputs.dryRun || 'false' }}
+#       secrets:
+#         SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
+#         GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+# GitHub-only lanes are off in sm_gitlab (see dmtools-agents
+# docs/agents/sm_gitlab.md), so silent-token / ci-workflow /
+# validation-checks / state-publish are ignored on a GitLab tick.
 
 name: 'Factory · Machine SM'
 
@@ -108,6 +128,21 @@ on:
         required: false
         type: string
         default: ''
+      scm-provider:
+        description: "Forge the SM tick reconciles: 'github' (default — runs sm_github@latest against github.repository) or 'gitlab' (runs sm_gitlab@latest against gitlab-project; needs the GITLAB_TOKEN secret)."
+        required: false
+        type: string
+        default: 'github'
+      gitlab-project:
+        description: "scm-provider=gitlab only: GitLab project path '<namespace>/<project>' (nested groups allowed, e.g. 'group/sub/project'). Split on the LAST '/' into jobParams.owner/repo."
+        required: false
+        type: string
+        default: ''
+      gitlab-base-path:
+        description: "scm-provider=gitlab only: GitLab instance URL WITHOUT /api/v4 (dmtools GITLAB_BASE_PATH), e.g. 'https://gitlab.example.com'."
+        required: false
+        type: string
+        default: 'https://gitlab.com'
 
 # EXACTLY the set factory-sm.yml declares — mapping a secret the callee
 # does not declare is rejected at call time, a missing declared one fails
@@ -124,6 +159,9 @@ on:
         required: false
       APP_PRIVATE_KEY:
         description: 'Private key (PEM) of the APP_ID GitHub App.'
+        required: false
+      GITLAB_TOKEN:
+        description: "scm-provider=gitlab only: GitLab token (api scope) for the sm_gitlab tick's gitlab_* tool calls (dmtools GITLAB_TOKEN)."
         required: false
 
 permissions:
@@ -145,6 +183,45 @@ jobs:
     name: sm / reconcile
     runs-on: ${{ inputs.runner }}
     steps:
+      # Fails BEFORE any install when the GitLab opt-in is half-wired.
+      # scm-provider=github (default) resolves to exactly the pre-knob tick.
+      - name: Resolve SM forge (github | gitlab)
+        id: forge
+        env:
+          SCM_PROVIDER: ${{ inputs.scm-provider }}
+          GITLAB_PROJECT: ${{ inputs.gitlab-project }}
+          GITLAB_BASE_PATH: ${{ inputs.gitlab-base-path }}
+          HAS_GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN != '' }}
+        run: |
+          provider="${SCM_PROVIDER:-github}"
+          case "$provider" in
+            github)
+              echo "pack=sm_github" >> "$GITHUB_OUTPUT"
+              ;;
+            gitlab)
+              project="${GITLAB_PROJECT#/}"
+              project="${project%/}"
+              case "$project" in
+                */*) ;;
+                *) echo "::error::scm-provider=gitlab needs gitlab-project '<namespace>/<project>' (got '${GITLAB_PROJECT}')"; exit 1 ;;
+              esac
+              if [ -z "$GITLAB_BASE_PATH" ]; then
+                echo "::error::scm-provider=gitlab needs gitlab-base-path"; exit 1
+              fi
+              if [ "$HAS_GITLAB_TOKEN" != "true" ]; then
+                echo "::error::scm-provider=gitlab needs the GITLAB_TOKEN secret mapped in the caller stub"; exit 1
+              fi
+              # Nested groups: namespace = everything before the LAST '/'.
+              echo "pack=sm_gitlab" >> "$GITHUB_OUTPUT"
+              echo "owner=${project%/*}" >> "$GITHUB_OUTPUT"
+              echo "repo=${project##*/}" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::unknown scm-provider '${provider}' (expected 'github' or 'gitlab')"; exit 1
+              ;;
+          esac
+          echo "scm provider: ${provider}"
+
       - name: Checkout target repository
         uses: actions/checkout@v7
         with:
@@ -225,8 +302,8 @@ jobs:
           echo "$HOME/.dmtools/bin" >> "$GITHUB_PATH"
 
       - name: Reconcile the machine loop
-        # The SM engine runs as a VERSIONED AGENT PACK: sm_github@latest
-        # resolves the pack version from the release's catalog.json,
+        # The SM engine runs as a VERSIONED AGENT PACK: sm_github@latest (or
+        # sm_gitlab@latest when steps.forge picked GitLab) resolves the pack version from the release's catalog.json,
         # downloads <agent>-<version>.zip, verifies the sha256 sidecar +
         # the manifest's per-file inventory, and caches it under
         # ~/.dmtools/packs/. CWD stays the target repo root so the pack's
@@ -250,19 +327,35 @@ jobs:
           # token (github.token, integration_id 15368) — a PAT in SILENT_GH_TOKEN
           # gets HTTP 403 "You must authenticate via a GitHub App".
           CHECKS_GH_TOKEN: ${{ github.token }}
+          # scm-provider=gitlab: dmtools' GitLab integration (gitlab_* JS
+          # globals) reads these; empty on a GitHub tick (integration off).
+          GITLAB_TOKEN: ${{ steps.forge.outputs.pack == 'sm_gitlab' && secrets.GITLAB_TOKEN || '' }}
+          GITLAB_BASE_PATH: ${{ steps.forge.outputs.pack == 'sm_gitlab' && inputs.gitlab-base-path || '' }}
+          GITLAB_WORKSPACE: ${{ steps.forge.outputs.owner }}
+          GITLAB_REPOSITORY: ${{ steps.forge.outputs.repo }}
+          SM_PACK: ${{ steps.forge.outputs.pack }}
           # Registry base = the resolved agents release's asset URL
           # directory: <base>/catalog.json maps agent→version, packs and
           # their .sha256 sidecars live at <base>/<name>-<version>.zip.
         run: |
           export DMTOOLS_PACK_REGISTRY="https://github.com/IstiN/dmtools-agents/releases/download/${AGENTS_TAG}"
           repo='${{ github.repository }}'
+          target="\"repo\":\"${repo}\""
+          gh_only=true
+          if [ "$SM_PACK" = "sm_gitlab" ]; then
+            # GitLab tick: the project rides jobParams.owner/repo (owner may
+            # be a nested group path). GitHub-only lanes are disabled in
+            # sm_gitlab, so their jobParams are not passed.
+            target="\"owner\":\"${GITLAB_WORKSPACE}\",\"repo\":\"${GITLAB_REPOSITORY}\""
+            gh_only=false
+          fi
           # #687: silentToken powers update_branch localActions (github.token
           # pushes trigger no workflows); sourceToken restores the PAT after.
           extra=""
-          if [ -n "$SILENT_GH_TOKEN" ]; then
+          if [ "$gh_only" = true ] && [ -n "$SILENT_GH_TOKEN" ]; then
             extra=",\"silentToken\":\"${SILENT_GH_TOKEN}\",\"sourceToken\":\"${SOURCE_GITHUB_TOKEN}\""
           fi
-          if [ -n "$CHECKS_GH_TOKEN" ]; then
+          if [ "$gh_only" = true ] && [ -n "$CHECKS_GH_TOKEN" ]; then
             extra="${extra},\"checksToken\":\"${CHECKS_GH_TOKEN}\""
           fi
           # #687: machine login is deployment-level (never hardcoded in the
@@ -273,13 +366,13 @@ jobs:
           fi
           # Dispatch-only CI: which workflow file the SM runs on PR heads.
           cw='${{ inputs.ci-workflow }}'
-          if [ -n "$cw" ]; then
+          if [ "$gh_only" = true ] && [ -n "$cw" ]; then
             extra="${extra},\"ciWorkflow\":\"${cw}\""
           fi
           # Bridge-free mode: check names the tick stamps itself (JSON
           # array as a STRING jobParam — escaped for the override JSON).
           vc='${{ inputs.validation-checks }}'
-          if [ -n "$vc" ]; then
+          if [ "$gh_only" = true ] && [ -n "$vc" ]; then
             vc_escaped=$(printf '%s' "$vc" | sed 's/"/\\"/g')
             extra="${extra},\"validationChecks\":\"${vc_escaped}\""
           fi
@@ -288,7 +381,7 @@ jobs:
           # uploads a factory-state.json snapshot as a release asset; the
           # board reads the public CDN link (no tokens, no rate limits).
           sp='${{ inputs.state-publish }}'
-          if [ -n "$sp" ]; then
+          if [ "$gh_only" = true ] && [ -n "$sp" ]; then
             sp_escaped=$(printf '%s' "$sp" | sed 's/"/\\"/g')
             extra="${extra},\"statePublish\":\"${sp_escaped}\""
           fi
@@ -305,8 +398,8 @@ jobs:
             fi
           fi
           if [ "${{ inputs.dryRun }}" = "true" ]; then
-            override="{\"params\":{\"jobParams\":{\"repo\":\"${repo}\",\"dryRun\":true${extra}}}}"
+            override="{\"params\":{\"jobParams\":{${target},\"dryRun\":true${extra}}}}"
           else
-            override="{\"params\":{\"jobParams\":{\"repo\":\"${repo}\"${extra}}}}"
+            override="{\"params\":{\"jobParams\":{${target}${extra}}}}"
           fi
-          dmtools run sm_github@latest "$override"
+          dmtools run "${SM_PACK}@latest" "$override"
