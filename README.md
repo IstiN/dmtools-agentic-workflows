@@ -4,8 +4,8 @@
 [dmtools](https://github.com/epam/dmtools-dart) ecosystem.
 
 Today: **GitHub Actions** reusable workflows (the machine-loop factory).
-Tomorrow (planned): the same factory surface for **GitLab pipelines** lives
-here too — one repo, every CI system the ecosystem runs on.
+**GitLab pipelines** can use the teammate and SM templates under `gitlab/`.
+The other native GitLab factory pipelines are still planned.
 
 Target repositories (`epam/dmtools-dart`, `IstiN/flutter_agent_harness`,
 `IstiN/dmtools-agents`, …) carry only **thin stubs** — trigger definitions
@@ -19,45 +19,137 @@ never need edits to bump a version.
 | Workflow | What it does | Caller stub |
 |---|---|---|
 | `factory-teammate.yml` | The issue-driven AI teammate: dev / review / rework legs, sessions, verdict, memory. Runs the agent pack (`bug_development@latest` …) from the dmtools-agents release selected by `factory_ref` / `vars.AGENTS_VERSION`. | `ai-teammate.yml` |
-| `factory-sm.yml` | The machine SM tick (`*/10` cron): reconciles PRs/issues against the loop rules — labels, validation arms, dispatches, merges. Runs the SM engine as a versioned agent pack (`sm_github@latest`; `sm_gitlab@latest` with `scm-provider: gitlab` — see below). | `machine-sm.yml` |
+| `factory-sm.yml` | The GitHub machine SM tick (`*/10` cron): reconciles PRs/issues against the loop rules — labels, validation arms, dispatches, merges. Runs `sm_github@latest`. The native GitLab template runs `sm_gitlab@latest` (see below). | `machine-sm.yml` |
 | `factory-merge.yml` | The event-driven merge bot: reacts to CI conclusions / label changes and squash-merges approved-green PRs within seconds (idempotent against the SM tick). | `machine-merge.yml` |
 | `factory-merge-trigger.yml` | The `pr_approved` merge bot: issue-labeled → linked PR → CLEAN → squash-merge → label removed → issue comment. Parameterized linking (body `Closes #N`, branch `N-…`/`gh-N`, PR-label reverse mapping). | `merge-trigger.yml` |
 | `factory-sm-kicker.yml` | The SM watchdog: dispatches an SM tick when the cron was missed; re-dispatches validation CI on codeless PR heads that carry no required contexts. | `sm-kicker.yml` |
 
-## The SM tick on a GitLab project (`sm_gitlab`)
+## Native GitLab teammate pipeline
 
-`factory-sm.yml` can reconcile a **GitLab** project instead of the calling
-GitHub repo. This is opt-in: `scm-provider` defaults to `github`, and existing
-callers get the same tick as before. The stub still lives in a GitHub repo,
-which provides the cron and `.dmtools/config.js`:
+Include the hidden `.factory-teammate` job from
+`gitlab/factory-teammate.yml` in the caller's `.gitlab-ci.yml`. Pin the
+include and `FACTORY_HOME_REF` to the **same full immutable SHA**:
 
 ```yaml
-jobs:
-  sm:
-    uses: IstiN/dmtools-agentic-workflows/.github/workflows/factory-sm.yml@<full-SHA>
-    with:
-      scm-provider: gitlab
-      gitlab-project: my-group/my-project          # nested groups OK; split on the last '/'
-      gitlab-base-path: https://gitlab.example.com # default https://gitlab.com (no /api/v4)
-      dryRun: ${{ github.event.inputs.dryRun || 'false' }}
-    secrets:
-      SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }} # still needed: release resolution + pack download
-      GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}               # api scope on the GitLab project
+include:
+  - remote: https://raw.githubusercontent.com/IstiN/dmtools-agentic-workflows/<full-SHA>/gitlab/factory-teammate.yml
+
+ai-teammate:
+  extends: .factory-teammate
+  # Supply your trusted Linux runner image and/or runner tags here.
+  variables:
+    FACTORY_HOME_REF: <full-SHA>
+  resource_group: teammate-$CI_PROJECT_ID-$FACTORY_ISSUE-$FACTORY_MR
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && ($CI_PIPELINE_SOURCE == "api" || $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "web")'
 ```
 
-- The tick runs `dmtools run sm_gitlab@latest`. The pack comes from the same
-  `AGENTS_VERSION` release as `sm_github`. The project is passed as
-  `jobParams.owner`/`repo`, and dmtools gets `GITLAB_TOKEN`,
-  `GITLAB_BASE_PATH`, `GITLAB_WORKSPACE`, and `GITLAB_REPOSITORY`.
-- If the GitLab inputs or secret are missing, the first step fails before
-  anything is installed.
-- `sm_gitlab` currently enables only the dispatch rules. Merges, validation,
-  branch updates, and verdicts are still GitHub-only (see dmtools-agents
-  `docs/agents/sm_gitlab.md`). For that reason `silent-token`, `ci-workflow`,
-  `validation-checks`, and `state-publish` are ignored on a GitLab tick.
-  `machine-author`, `parallel-workers`, and `dryRun` still apply.
-- `.dmtools/config.js` `repository.owner`/`repo` take precedence over the
-  workflow input. Leave them unset, or point them at the GitLab project.
+Dispatch a pipeline on the default branch with exactly one project-local
+IID: `FACTORY_ISSUE` or `FACTORY_MR`. `FACTORY_LEG` accepts `dev`, `bug`,
+`story`, `review`, or `rework`; empty derives from fresh labels and machine
+assignment. MR anchors support only review/rework. `FACTORY_REASON` is an
+audit message; `FACTORY_CHECKOUT_REF` optionally selects the worktree ref
+(MR anchors default to `refs/merge-requests/<IID>/head`). Issue/label webhooks
+and scheduling belong to the caller or an external dispatcher: GitLab does
+not automatically start pipelines for issue-label changes.
+
+Caller requirements:
+
+- A trusted Linux runner with Bash, Git, curl, jq, Node.js, GitHub CLI,
+  unzip, tar, and GNU `timeout`. Install agent-work toolchains in the
+  caller's image or `before_script`; no Java/Flutter/etc. versions are
+  selected by this template.
+- Masked `GITLAB_TOKEN` (`api` and `write_repository` scopes, with project
+  access) and `SOURCE_GITHUB_TOKEN` (GitHub release downloads). Set provider
+  secrets as masked CI variables, including `ZAI_CODE_KEY`, its numbered
+  fallback slots, `KIMI_REVIEW_KEY`, or `CUSTOM_PROVIDER_KEY1..3` with matching
+  `CUSTOM_PROVIDER_KEY1_NAME..3_NAME`. Provider queues are passed through
+  as `ENV_VAR_DEV_QUEUE` and `ENV_VAR_REVIEW_QUEUE`.
+- `.dmtools/config.js` with `sm.runners.bug`/`story` (or `dev`), `review`,
+  and `rework`. **These runners must support GitLab**: GitHub-only packs
+  cannot be ported by changing CI YAML. The factory supplies GitLab
+  connection variables, `jobParams.owner`/`repo`/`scmProvider`/`machineAuthor`,
+  and tracker-shaped `input/gl-<IID>/ticket.json` or
+  `input/mr-<IID>/ticket.json`. Review runners must write a structured
+  `decision` or `verdict` in `outputs/pr_review.json` (`APPROVE`,
+  `CHANGES_REQUESTED`, or `BLOCK`). Issue reviews resolve exactly one open
+  local MR via GitLab's related-MRs API; runners must publish that linkage.
+- `AGENTS_VERSION`, `DMTOOLS_VERSION`, and `FA_VERSION` default to `latest`;
+  concrete release tags pin tooling. `AGENT_HANDLE` identifies the machine
+  account; `MAX_AUTO_REWORK_ROUNDS` defaults to `2`.
+
+The template honors closed/held items, routes dev/review/rework, posts job
+start/completion notes, and consumes review/rework queue labels. Successful
+development/rework queues review unless the runner requested human input.
+Approval labels require successful CI on the captured MR head and GitLab
+mergeability; missing verdicts and ambiguous/changing MR heads escalate to
+`needs-human`. Rework is bounded and provider exhaustion parks the lane with
+`provider_quota`. An approval awaiting CI is reported but not automatically
+reconciled here: the caller must re-dispatch review or supply a reconciler.
+Merging remains caller-owned.
+
+Workspace `.fah` session/memory state persists on `fa-sess/gl-<IID>` or
+`fa-sess/mr-<IID>`; timed-out agent sessions are discarded. Runners storing
+sessions outside `.fah` must provide their own persistence. Session/memory
+is not committed to the default branch. Diagnostic artifacts upload even on
+failure. The caller's `resource_group` must serialize all legs for an anchor;
+the hidden template owns neither triggers nor concurrency. Do not expose
+write/provider tokens to untrusted pipeline definitions or fork worktrees.
+
+## Native GitLab SM pipeline
+
+Include `gitlab/factory-sm.yml` at an immutable full SHA and extend its
+hidden `.factory-sm` job in the caller's `.gitlab-ci.yml`. The caller owns
+the runner image/tags, pipeline schedule, trigger rules, and concurrency:
+
+```yaml
+include:
+  - remote: https://raw.githubusercontent.com/IstiN/dmtools-agentic-workflows/<full-SHA>/gitlab/factory-sm.yml
+
+machine-sm:
+  extends: .factory-sm
+  # Supply your trusted Linux runner image and/or runner tags here.
+  resource_group: machine-sm-$CI_PROJECT_ID
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api")'
+```
+
+Create a GitLab pipeline schedule (for example `*/10 * * * *`) on the default
+branch. Use a trusted Linux runner with Bash, Git, curl, jq, Node.js, GitHub
+CLI, and unzip. Keep `.dmtools/config.js` in the calling repository and set
+masked `GITLAB_TOKEN` (`api` scope, project access) and
+`SOURCE_GITHUB_TOKEN` (GitHub release downloads) as caller CI variables.
+
+| CI variable | Purpose | Default |
+|---|---|---|
+| `AGENTS_VERSION` | Agent-pack release tag | `latest` |
+| `DMTOOLS_VERSION` | dmtools CLI release tag | `latest` |
+| `SM_GITLAB_PROJECT` | Target `namespace/project`, including nested groups | `$CI_PROJECT_PATH` |
+| `GITLAB_BASE_PATH` | GitLab instance URL without `/api/v4` | `$CI_SERVER_URL` |
+| `SM_DRY_RUN` | `true` logs the plan without acting; `false` runs live | `false` |
+| `SM_MACHINE_AUTHOR` | Deployment's machine login | Empty, uses pack/config default |
+| `SM_PARALLEL_WORKERS` | Parallel read workers, enabled for values >= 2 | `0`, sequential |
+
+The template validates inputs before installing anything, resolves release
+tags at run time (explicit tags are checked and never floated), installs
+the CLI with an authenticated release-download fallback, and runs
+`sm_gitlab@latest` from the resolved agents release registry. Project identity
+rides `jobParams.owner`/`repo` and the GitLab connection variables. JSON
+overrides are built with jq, and diagnostic output uploads even on failure.
+`.dmtools/config.js` `repository.owner`/`repo` take precedence in the pack;
+leave them unset or align them with the selected GitLab project. Configure
+the pack's dispatch runners for the caller's native teammate pipeline.
+
+**Engine limitation:** `sm_gitlab` currently enables dispatch rules only.
+Merges, validation, branch updates, and verdict reconciliation remain
+GitHub-only in the released engine; this CI template does not implement
+those missing engine rules or accept their GitHub-only inputs.
+
+**Contract change:** `.github/workflows/factory-sm.yml` is now GitHub-only.
+The `scm-provider`, `gitlab-project`, `gitlab-base-path` inputs and
+`GITLAB_TOKEN` secret have been removed from that reusable workflow. Existing
+immutable pins keep the old behavior; callers adopting this revision for
+GitLab must migrate to the native template above.
 
 ## The SM kicker: why every machine repo needs it
 
@@ -166,5 +258,5 @@ loop without its watchdog is the stall we just lived through.
   with safe defaults, everything repo-specific parameterized, no versions
   hardcoded, `concurrency` owned by the caller (never declared inside a
   reusable unit).
-- GitLab pipelines (future): same freeze contract, `gitlab/` namespace,
+- GitLab pipelines: same freeze contract, `gitlab/` namespace,
   mirrored semantics — the stub/pin discipline is CI-system-agnostic.

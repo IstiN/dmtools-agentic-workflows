@@ -1,0 +1,313 @@
+# Caller owns rules, runner image/tags, and the per-anchor resource_group.
+.factory-teammate:
+  timeout: 4h 20m
+  variables:
+    GIT_DEPTH: "1"
+    GIT_SUBMODULE_STRATEGY: none
+    FACTORY_HOME_URL: https://github.com/IstiN/dmtools-agentic-workflows.git
+    FACTORY_HOME_REF: ""
+    FACTORY_ISSUE: ""
+    FACTORY_MR: ""
+    FACTORY_LEG: ""
+    FACTORY_REASON: "pipeline"
+    FACTORY_CHECKOUT_REF: ""
+    AGENT_HANDLE: ai-teammate
+    AGENTS_VERSION: latest
+    DMTOOLS_VERSION: latest
+    FA_VERSION: latest
+    MAX_AUTO_REWORK_ROUNDS: "2"
+    AI_AGENT_PROVIDER: fa
+  script:
+    - |
+      set -euo pipefail
+      for tool in bash git curl jq node gh unzip tar timeout; do
+        command -v "$tool" >/dev/null || { echo "Required tool missing: $tool" >&2; exit 1; }
+      done
+      : "${GITLAB_TOKEN:?Set a masked GitLab token with api and write_repository scopes}"
+      : "${SOURCE_GITHUB_TOKEN:?Set a masked GitHub token for release downloads}"
+      [[ "$FACTORY_HOME_REF" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "FACTORY_HOME_REF must match the immutable include SHA" >&2; exit 1; }
+      if [[ -n "$FACTORY_ISSUE" && -n "$FACTORY_MR" ]] || [[ -z "$FACTORY_ISSUE" && -z "$FACTORY_MR" ]]; then
+        echo "Pass exactly one of FACTORY_ISSUE or FACTORY_MR" >&2
+        exit 1
+      fi
+      number="${FACTORY_MR:-$FACTORY_ISSUE}"
+      [[ "$number" =~ ^[1-9][0-9]*$ ]] || { echo "Anchor must be a positive project-local IID" >&2; exit 1; }
+      [[ "$MAX_AUTO_REWORK_ROUNDS" =~ ^[0-9]+$ ]] || exit 1
+      case "$FACTORY_LEG" in ""|dev|bug|story|review|rework) ;; *) echo "Unknown leg: $FACTORY_LEG" >&2; exit 1 ;; esac
+      export GITLAB_BASE_PATH="${GITLAB_BASE_PATH:-$CI_SERVER_URL}"
+      export GITLAB_WORKSPACE="${CI_PROJECT_PATH%/*}" GITLAB_REPOSITORY="${CI_PROJECT_PATH##*/}"
+      export CI_RUN_URL="$CI_JOB_URL" GH_TOKEN="$SOURCE_GITHUB_TOKEN" DMTOOLS_GITHUB_TOKEN="$SOURCE_GITHUB_TOKEN"
+      export RUNNER_TEMP
+      RUNNER_TEMP="$(mktemp -d)"
+      export GITHUB_WORKSPACE="$CI_PROJECT_DIR" GITHUB_ENV="$RUNNER_TEMP/env" GITHUB_PATH="$RUNNER_TEMP/path"
+      touch "$GITHUB_ENV" "$GITHUB_PATH"
+      mkdir -p .dmtools
+      api() {
+        local endpoint="$1"
+        shift
+        curl --silent --show-error --fail --connect-timeout 15 --max-time 60 \
+          --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$@" \
+          "${GITLAB_BASE_PATH%/}/api/v4/projects/$CI_PROJECT_ID/$endpoint"
+      }
+      resource=issues
+      anchor="gl-$number"
+      if [[ -n "$FACTORY_MR" ]]; then resource=merge_requests; anchor="mr-$number"; fi
+      endpoint="$resource/$number"
+      if ! ticket="$(api "$endpoint")"; then
+        echo "Unable to resolve $anchor; failing rather than treating an API outage as a skip" >&2
+        exit 1
+      fi
+      if [[ "$(jq -r .state <<< "$ticket")" != opened ]] || \
+        jq -e '.labels | any(. == "blocked" or . == "agent:skip" or . == "provider_quota" or . == "needs-human")' <<< "$ticket" >/dev/null; then
+        echo "$anchor is closed or held; nothing to run"
+        exit 0
+      fi
+      leg="$FACTORY_LEG"
+      if [[ -z "$leg" ]]; then
+        if jq -e '.labels | index("agent:rework")' <<< "$ticket" >/dev/null; then
+          if ! jq -e '.labels | index("status:In Rework")' <<< "$ticket" >/dev/null; then leg=rework; fi
+        elif jq -e '.labels | index("agent:review")' <<< "$ticket" >/dev/null; then
+          if ! jq -e '.labels | index("status:In Review")' <<< "$ticket" >/dev/null; then leg=review; fi
+        elif [[ "$resource" == merge_requests ]]; then
+          echo "MR has no review/rework queue label; nothing to run"
+          exit 0
+        elif jq -e --arg machine "$AGENT_HANDLE" \
+          'any(.assignees[]?; .username == $machine) and
+           (.labels | any(. == "status:In Development" or . == "ai_questions_asked" or . == "ai_pr_reviewed") | not)' \
+          <<< "$ticket" >/dev/null; then leg=dev; fi
+      fi
+      if [[ -z "$leg" ]]; then echo "No eligible leg for $anchor"; exit 0; fi
+      if [[ "$resource" == merge_requests && "$leg" != review && "$leg" != rework ]]; then
+        echo "MR anchors support only review/rework" >&2; exit 1
+      fi
+      slot="$leg"
+      if [[ "$leg" == dev ]]; then
+        slot=story
+        if jq -e '(.title | test("^\\[?bug\\]"; "i")) or (.labels | any(ascii_downcase == "bug"))' <<< "$ticket" >/dev/null; then slot=bug; fi
+      fi
+      if [[ "$slot" == bug || "$slot" == story ]]; then leg=dev; fi
+      export RUNNER
+      RUNNER="$(FACTORY_SLOT="$slot" node -e '
+        const config = require(process.cwd() + "/.dmtools/config.js");
+        const runners = config.sm && config.sm.runners || {};
+        const slot = process.env.FACTORY_SLOT;
+        const runner = runners[slot] || (["bug", "story"].includes(slot) ? runners.dev : "");
+        if (typeof runner !== "string" || !runner) process.exit(1);
+        process.stdout.write(runner);
+      ')" || { echo "Missing sm.runners.$slot in caller .dmtools/config.js" >&2; exit 1; }
+      export AI_TEAMMATE_DISPLAY_KEY="GL-$anchor" AI_TEAMMATE_CONCURRENCY_KEY="$anchor"
+      export FA_LOG_FILE="$CI_PROJECT_DIR/.dmtools/fa-trace.log"
+      session_branch="fa-sess/$anchor"
+      update_labels() {
+        api "$endpoint" --request PUT --data-urlencode "add_labels=$1" --data-urlencode "remove_labels=$2" >/dev/null
+      }
+      note() { api "$endpoint/notes" --request POST --data-urlencode "body=$1" >/dev/null; }
+      mr_number="$FACTORY_MR"
+      reviewed_sha=""
+      if [[ "$leg" == review ]]; then
+        if [[ -z "$mr_number" ]]; then
+          related="$(api "issues/$number/related_merge_requests?per_page=100")"
+          mr_number="$(jq -r --argjson project "$CI_PROJECT_ID" '[.[] | select(.state == "opened" and .project_id == $project)] |
+            if length == 1 then .[0].iid else empty end' <<< "$related")"
+        fi
+        if [[ -z "$mr_number" ]]; then
+          update_labels needs-human 'agent:review,pr_approved'
+          note 'Review could not resolve exactly one open local merge request.'
+          exit 1
+        fi
+        merge_request="$(api "merge_requests/$mr_number")"
+        reviewed_sha="$(jq -er '.sha | select(type == "string" and length > 0)' <<< "$merge_request")"
+        api "merge_requests/$mr_number" --request PUT --data-urlencode remove_labels=pr_approved >/dev/null
+        update_labels '' pr_approved
+        printf '%s\n' "$merge_request" > .dmtools/merge-request.json
+      fi
+      git config user.name "${FACTORY_GIT_NAME:-$AGENT_HANDLE}"
+      git config user.email "${FACTORY_GIT_EMAIL:-$AGENT_HANDLE@users.noreply.${CI_SERVER_HOST}}"
+      git config --local --unset-all credential.helper || true
+      git config --local credential.helper ''
+      git config --local --add credential.helper '!f() { if [ "$1" = get ]; then printf "%s\n" "username=oauth2" "password=$GITLAB_TOKEN"; fi; }; f'
+      git remote set-url origin "$CI_PROJECT_URL.git"
+      git config --local credential.useHttpPath true
+      while IFS= read -r config_key; do git config --local --unset-all "$config_key"; done \
+        < <(git config --local --name-only --get-regexp '^http\..*\.extraheader$' || true)
+      checkout_ref="$FACTORY_CHECKOUT_REF"
+      if [[ -z "$checkout_ref" && "$resource" == merge_requests ]]; then checkout_ref="refs/merge-requests/$number/head"; fi
+      if [[ -n "$checkout_ref" ]]; then
+        git fetch --depth 1 origin "$checkout_ref"
+        git checkout --detach FETCH_HEAD
+      fi
+      git init -q "$RUNNER_TEMP/factory-kit"
+      git -C "$RUNNER_TEMP/factory-kit" remote add origin "$FACTORY_HOME_URL"
+      git -C "$RUNNER_TEMP/factory-kit" fetch -q --depth 1 origin "$FACTORY_HOME_REF"
+      git -C "$RUNNER_TEMP/factory-kit" checkout -q FETCH_HEAD -- scripts/ kit/
+      import_env() {
+        local env_name env_value
+        while IFS='=' read -r env_name env_value; do
+          [[ "$env_name" =~ ^[A-Z_][A-Z0-9_]*$ ]] || { echo "Unsupported installer environment entry" >&2; return 1; }
+          export "$env_name=$env_value"
+        done < "$GITHUB_ENV"
+        : > "$GITHUB_ENV"
+        while IFS= read -r env_value; do export PATH="$env_value:$PATH"; done < "$GITHUB_PATH"
+        : > "$GITHUB_PATH"
+      }
+      AGENTS_KNOB="$AGENTS_VERSION" PACK_TAG="${DMTOOLS_PACK_REGISTRY:-}" \
+        bash -e "$RUNNER_TEMP/factory-kit/scripts/fetch-factory-setup.sh"
+      import_env
+      export DMTOOLS_PACK_REGISTRY="https://github.com/IstiN/dmtools-agents/releases/download/$RESOLVED_AGENTS_TAG"
+      bash -e "$RUNNER_TEMP/factory-kit/scripts/resolve-dmtools-version.sh"
+      import_env
+      bash -e "$RUNNER_TEMP/factory-kit/scripts/install-dmtools-cli.sh"
+      import_env
+      export PATH="$HOME/.local/bin:$PATH"
+      bash -e "$RUNNER_TEMP/factory-kit/scripts/install-fa-cli.sh"
+      import_env
+      for slot_number in 1 2 3; do
+        name_var="CUSTOM_PROVIDER_KEY${slot_number}_NAME"
+        value_var="CUSTOM_PROVIDER_KEY${slot_number}"
+        provider_name="${!name_var:-}"
+        if [[ -n "$provider_name" ]]; then
+          [[ "$provider_name" =~ ^[A-Z_][A-Z0-9_]*$ ]] || exit 1
+          export "$provider_name=${!value_var:-}"
+        fi
+      done
+      printf '%s\n' 'input/' 'outputs/' '.dmtools/' '.fah/' 'factory-agents/' >> .git/info/exclude
+      if git fetch -q --depth 1 origin "refs/heads/$session_branch" 2>/dev/null; then
+        git archive FETCH_HEAD -- .fah 2>/dev/null | tar -xf - || true
+      fi
+      mkdir -p "input/$anchor"
+      jq --arg key "$anchor" '{key: $key, number: .iid, title: .title, body: (.description // ""),
+        url: .web_url, state: .state, labels: .labels}' <<< "$ticket" > "input/$anchor/ticket.json"
+      jq -r '.title, (.description // "")' <<< "$ticket" > input/ticket.md
+      params="$(jq -nc --arg owner "$GITLAB_WORKSPACE" --arg repo "$GITLAB_REPOSITORY" \
+        --arg machine "$AGENT_HANDLE" '{params: {jobParams: {owner: $owner, repo: $repo, scmProvider: "gitlab", machineAuthor: $machine}}}')"
+      metadata="$(jq -nc --arg anchor "$anchor" '{contextId: $anchor}')"
+      finalize() {
+        local result="$?" session_dir
+        trap - EXIT
+        set +e
+        if [[ "$leg" == review ]]; then update_labels '' 'agent:review,status:In Review'; fi
+        if [[ "$leg" == rework ]]; then update_labels '' 'agent:rework,status:In Rework'; fi
+        if [[ "$result" != 0 && "$leg" == dev ]]; then update_labels '' 'status:In Development'; fi
+        if [[ "$result" != 0 && -f "$FA_LOG_FILE" ]] && \
+          tail -c 2000 "$FA_LOG_FILE" | grep -qiE 'provider chain exhausted|usage[ _-]?limit|quota|billing|insufficient (credit|balance)|429'; then
+          update_labels provider_quota ''
+        fi
+        cp "$HOME/.fah/crash.log" .dmtools/fa-crash.log 2>/dev/null
+        if [[ -d .fah && "$agent_result" != 124 && "$agent_result" != 137 ]]; then
+          session_dir="$RUNNER_TEMP/session"
+          git init -q "$session_dir"
+          git -C "$session_dir" config user.name "$(git config user.name)"
+          git -C "$session_dir" config user.email "$(git config user.email)"
+          cp -R .fah "$session_dir/"
+          git -C "$session_dir" add .fah
+          git -C "$session_dir" commit -qm "Save $anchor session"
+          git fetch -q "$session_dir" HEAD
+          git push origin "FETCH_HEAD:refs/heads/$session_branch" --force-with-lease="refs/heads/$session_branch:$(git ls-remote origin "refs/heads/$session_branch" | cut -f1)" \
+            > .dmtools/session-persist.log 2>&1
+        elif [[ "$agent_result" == 124 || "$agent_result" == 137 ]]; then
+          git push origin --delete "$session_branch" > .dmtools/session-persist.log 2>&1
+        fi
+        note "AI Teammate $leg completed (exit $result): $CI_RUN_URL"
+        git config --local --unset-all credential.helper
+        rm -rf "$RUNNER_TEMP"
+        exit "$result"
+      }
+      agent_result=1
+      jq -nc --arg endpoint "$endpoint" --arg leg "$leg" --arg branch "$session_branch" \
+        '{endpoint: $endpoint, leg: $leg, branch: $branch}' > .dmtools/factory-state.json
+      trap finalize EXIT
+      case "$leg" in
+        dev) update_labels 'status:In Development' '' ;;
+        review) update_labels 'status:In Review' '' ;;
+        rework) update_labels 'status:In Rework' '' ;;
+      esac
+      note "AI Teammate $leg started ($FACTORY_REASON): $CI_RUN_URL"
+      mkdir -p "$RUNNER_TEMP/git-guard"
+      ln -s "$RUNNER_TEMP/factory-kit/kit/git-push-guard.sh" "$RUNNER_TEMP/git-guard/git"
+      export FA_GIT_GUARD_PROTECTED_BRANCHES="$CI_DEFAULT_BRANCH ${FA_GIT_GUARD_PROTECTED_BRANCHES:-}"
+      set +e
+      PATH="$RUNNER_TEMP/git-guard:$PATH" timeout --signal=TERM --kill-after=60s 240m \
+        dmtools run "$RUNNER" "$params" --metadata "$metadata" --ciRunUrl "$CI_RUN_URL" --debug \
+        2>&1 | tee .dmtools/run-output.txt
+      agent_result="${PIPESTATUS[0]}"
+      set -e
+      if [[ "$agent_result" != 0 ]]; then exit "$agent_result"; fi
+      if [[ "$leg" == dev || "$leg" == rework ]]; then
+        fresh_ticket="$(api "$endpoint")"
+        if ! jq -e '.labels | index("ai_questions_asked")' <<< "$fresh_ticket" >/dev/null; then
+          update_labels 'agent:review' 'agent:rework,status:In Development,ai_pr_reviewed,pr_approved'
+        fi
+      else
+        verdict_file=outputs/pr_review.json
+        decision=""
+        if [[ -f "$verdict_file" ]]; then
+          decision="$(jq -r '(.decision // .verdict // "") | ascii_upcase' "$verdict_file")"
+        fi
+        merge_request="$(api "merge_requests/$mr_number")"
+        if [[ "$(jq -r .sha <<< "$merge_request")" != "$reviewed_sha" ]]; then
+          update_labels needs-human pr_approved
+          note 'MR head changed during review; verdict discarded. Re-arm review on the new head.'
+          exit 1
+        fi
+        case "$decision" in
+          APPROVE|APPROVED)
+            if jq -e '.state == "opened" and .head_pipeline.status == "success" and .head_pipeline.sha == .sha and
+              .draft != true and (.detailed_merge_status == "mergeable")' <<< "$merge_request" >/dev/null; then
+              api "merge_requests/$mr_number" --request PUT --data-urlencode add_labels=pr_approved >/dev/null
+              update_labels 'ai_pr_reviewed,pr_approved' ''
+            else
+              update_labels ai_pr_reviewed ''
+              note 'Review approved; awaiting successful CI on the current MR head and mergeability. No merge approval label was set.'
+            fi
+            ;;
+          CHANGES_REQUESTED|REQUEST_CHANGES|BLOCK)
+            fresh_ticket="$(api "$endpoint")"
+            round="$(jq '[.labels[] | select(test("^rework-round:[0-9]+$")) | split(":")[1] | tonumber] | max // 0' <<< "$fresh_ticket")"
+            if (( round >= MAX_AUTO_REWORK_ROUNDS )); then
+              update_labels needs-human pr_approved
+              note "Automatic rework limit reached ($MAX_AUTO_REWORK_ROUNDS)."
+            else
+              update_labels "agent:rework,rework-round:$((round + 1))" "pr_approved,rework-round:$round"
+            fi
+            api "merge_requests/$mr_number" --request PUT --data-urlencode remove_labels=pr_approved >/dev/null
+            ;;
+          *)
+            update_labels needs-human pr_approved
+            note 'Review produced no recognized structured verdict in outputs/pr_review.json; manual triage required.'
+            exit 1
+            ;;
+        esac
+      fi
+  after_script:
+    - |
+      set +e
+      if [[ "$CI_JOB_STATUS" == canceled && -f .dmtools/factory-state.json && -n "${GITLAB_TOKEN:-}" ]]; then
+        endpoint="$(jq -r .endpoint .dmtools/factory-state.json)"
+        leg="$(jq -r .leg .dmtools/factory-state.json)"
+        case "$leg" in
+          dev) remove_labels='status:In Development' ;;
+          review) remove_labels='agent:review,status:In Review' ;;
+          rework) remove_labels='agent:rework,status:In Rework' ;;
+          *) remove_labels='' ;;
+        esac
+        if [[ "$endpoint" =~ ^(issues|merge_requests)/[1-9][0-9]*$ ]]; then
+          base="${GITLAB_BASE_PATH:-$CI_SERVER_URL}/api/v4/projects/$CI_PROJECT_ID"
+          curl --silent --show-error --fail --max-time 30 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --request PUT --data-urlencode "remove_labels=$remove_labels" "$base/$endpoint" >/dev/null
+          curl --silent --show-error --fail --max-time 30 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --request POST --data-urlencode "body=AI Teammate $leg canceled: $CI_JOB_URL" "$base/$endpoint/notes" >/dev/null
+          branch="$(jq -r '.branch | @uri' .dmtools/factory-state.json)"
+          curl --silent --show-error --fail --max-time 30 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --request DELETE "$base/repository/branches/$branch" >/dev/null
+        fi
+      fi
+      git config --local --unset-all credential.helper || true
+  artifacts:
+    when: always
+    paths:
+      - .dmtools/fa-trace.log
+      - .dmtools/run-output.txt
+      - .dmtools/fa-crash.log
+      - .dmtools/session-persist.log
+      - outputs/pr_review.json
+    expire_in: 7 days
