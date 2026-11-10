@@ -139,7 +139,7 @@
           echo "Issue #$FACTORY_ISSUE labels: $(printf '%s' "$issue_json" | jq -r '.labels | join(", ")')"
           echo "Issue #$FACTORY_ISSUE assignees: $(printf '%s' "$issue_json" | jq -r '[.assignees[]? | "\(.username) (\(.name))"] | join(", ")')"
           if [ -z "${FACTORY_LEG:-}" ] || [ "$FACTORY_LEG" = dev ] || [ "$FACTORY_LEG" = bug ] || [ "$FACTORY_LEG" = story ]; then
-            if printf '%s' "$issue_json" | jq -e '(.labels | index("ai_developed")) and
+            if printf '%s' "$issue_json" | jq -e '(.labels | index("agent:dev")) and (.labels | index("ai_developed")) and
               (.labels | any(. == "agent:review" or . == "agent:rework" or . == "status:In Development" or . == "ai_questions_asked" or . == "ai_pr_reviewed") | not)' >/dev/null; then
               if curl --fail --silent --show-error --request PUT --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
                 --data-urlencode "remove_labels=ai_developed" \
@@ -243,7 +243,7 @@
           exit 0
         elif jq -e --arg machine "$AGENT_HANDLE" \
           'any(.assignees[]?; .username == $machine) and
-           (.labels | any(. == "status:In Development" or . == "ai_questions_asked" or . == "ai_pr_reviewed") | not)' \
+           (.labels | any(. == "status:In Development" or . == "ai_questions_asked" or . == "ai_pr_reviewed" or . == "ai_developed") | not)' \
           <<< "$ticket" >/dev/null; then leg=dev; fi
       fi
       if [[ -z "$leg" ]]; then echo "No eligible leg for $anchor"; exit 0; fi
@@ -356,7 +356,10 @@
         trap - EXIT
         set +e
         if [[ "$leg" == review ]]; then update_labels '' 'agent:review,status:In Review'; fi
-        if [[ "$leg" == rework ]]; then update_labels '' 'agent:rework,status:In Rework'; fi
+        if [[ "$leg" == rework ]]; then
+          if [[ "$result" != 0 ]]; then update_labels 'agent:rework' 'status:In Rework'
+          else update_labels '' 'status:In Rework'; fi
+        fi
         if [[ "$result" != 0 && "$leg" == dev ]]; then update_labels '' 'status:In Development'; fi
         if [[ "$result" != 0 && -f "$FA_LOG_FILE" ]] && \
           tail -c 2000 "$FA_LOG_FILE" | grep -qiE 'provider chain exhausted|usage[ _-]?limit|quota|billing|insufficient (credit|balance)|429'; then
@@ -389,7 +392,7 @@
       case "$leg" in
         dev) update_labels 'status:In Development' '' ;;
         review) update_labels 'status:In Review' '' ;;
-        rework) update_labels 'status:In Rework' '' ;;
+        rework) update_labels 'agent:rework,status:In Rework' '' ;;
       esac
       note "AI Teammate $leg started ($FACTORY_REASON): $CI_RUN_URL"
       mkdir -p "$RUNNER_TEMP/git-guard"
@@ -484,7 +487,7 @@
   after_script:
     - |
       set +e
-      if [[ "${DMTOOLS_GITLAB_FACTORY_HELPERS:-false}" == true && -f .dmtools/factory-state.json ]]; then
+      if [[ -f .dmtools/factory-state.json ]]; then
         state_leg="$(jq -r .leg .dmtools/factory-state.json)"
         if [[ "$state_leg" == review && -n "${GITLAB_REVIEWER_TOKEN:-}" ]]; then
           GITLAB_TOKEN="$GITLAB_REVIEWER_TOKEN"
@@ -495,16 +498,17 @@
       if [[ "$CI_JOB_STATUS" == canceled && -f .dmtools/factory-state.json && -n "${GITLAB_TOKEN:-}" ]]; then
         endpoint="$(jq -r .endpoint .dmtools/factory-state.json)"
         leg="$(jq -r .leg .dmtools/factory-state.json)"
+        add_labels=''
         case "$leg" in
           dev) remove_labels='status:In Development' ;;
           review) remove_labels='agent:review,status:In Review' ;;
-          rework) remove_labels='agent:rework,status:In Rework' ;;
+          rework) add_labels='agent:rework'; remove_labels='status:In Rework' ;;
           *) remove_labels='' ;;
         esac
         if [[ "$endpoint" =~ ^(issues|merge_requests)/[1-9][0-9]*$ ]]; then
           base="${GITLAB_BASE_PATH:-$CI_SERVER_URL}/api/v4/projects/$CI_PROJECT_ID"
           curl --silent --show-error --fail --max-time 30 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            --request PUT --data-urlencode "remove_labels=$remove_labels" "$base/$endpoint" >/dev/null
+            --request PUT --data-urlencode "add_labels=$add_labels" --data-urlencode "remove_labels=$remove_labels" "$base/$endpoint" >/dev/null
           curl --silent --show-error --fail --max-time 30 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
             --request POST --data-urlencode "body=AI Teammate $leg canceled: $CI_JOB_URL" "$base/$endpoint/notes" >/dev/null
           branch="$(jq -r '.branch | @uri' .dmtools/factory-state.json)"
@@ -536,35 +540,59 @@ ai-teammate-scan:
       : "${GITLAB_TOKEN:?Set a GitLab token with api access to list issues and create pipelines}"
       : "${FACTORY_HOME_REF:?Set FACTORY_HOME_REF to the pinned shared workflow commit SHA}"
       assignee="${DMTOOLS_AI_DEV_USERNAME:-ai-dev}"
-      echo "Scanning open issues with label agent:dev assigned to $assignee"
-      page=1
+      echo "Scanning development, review and rework queues (development assignee: $assignee)"
       dispatched=0
-      while :; do
-        response="$(curl --fail --silent --show-error --header "PRIVATE-TOKEN: $GITLAB_TOKEN" --get \
-          --data-urlencode "state=opened" \
-          --data-urlencode "labels=agent:dev" \
-          --data-urlencode "per_page=100" \
-          --data-urlencode "page=$page" \
-          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/issues")"
-        count="$(printf '%s' "$response" | jq -er 'if type == "array" then length else error("Expected an issues array") end')"
-        if [ "$count" -eq 0 ]; then
-          break
-        fi
-        issue_assignees="$(printf '%s' "$response" | jq -r --arg assignee "$assignee" \
-          '.[] | select(.state == "opened" and (.labels | index("agent:dev"))) |
-           . as $issue | [.assignees[]? | select(.username == $assignee or .name == $assignee)] |
-           select(length > 0) | [$issue.iid, .[0].username] | @tsv')"
-        if [ -z "$issue_assignees" ]; then
-          echo "No matching assigned issues found on page $page"
-        else
-          while IFS=$'\t' read -r issue_iid username; do
-            [ -n "$issue_iid" ] || continue
-            echo "Starting ai-teammate API pipeline for issue #$issue_iid"
+      claimed_mrs=" "
+      for resource in issues merge_requests; do
+        page=1
+        while :; do
+          response="$(curl --fail --silent --show-error --header "PRIVATE-TOKEN: $GITLAB_TOKEN" --get \
+            --data-urlencode "state=opened" \
+            --data-urlencode "scope=all" \
+            --data-urlencode "per_page=100" \
+            --data-urlencode "page=$page" \
+            "$CI_API_V4_URL/projects/$CI_PROJECT_ID/$resource")"
+          count="$(printf '%s' "$response" | jq -er 'if type == "array" then length else error("Expected an anchor array") end')"
+          if [ "$count" -eq 0 ]; then break; fi
+          queued="$(printf '%s' "$response" | jq -r --arg assignee "$assignee" --arg resource "$resource" '
+            .[] | select(.state == "opened") |
+            . as $anchor | (.labels // []) as $labels |
+            select($labels | any(. == "blocked" or . == "agent:skip" or . == "provider_quota" or . == "needs-human"
+              or . == "status:In Development" or . == "status:In Review" or . == "status:In Rework"
+              or . == "ai_questions_asked") | not) |
+            ([.assignees[]? | select(.username == $assignee or .name == $assignee)][0].username // "") as $username |
+            (if ($labels | index("agent:rework")) then "rework"
+             elif ($labels | index("agent:review")) then "review"
+             elif $resource == "issues" and $username != "" and ($labels | index("agent:dev"))
+               and ($labels | index("ai_pr_reviewed") | not) then "dev"
+             else "" end) as $leg |
+            select($leg != "") | [$anchor.iid, $leg, (if $username != "" then $username else $assignee end)] | @tsv')"
+          while IFS=$'\t' read -r anchor_iid queue_leg username; do
+            [ -n "$anchor_iid" ] || continue
+            issue_iid=""; mr_iid=""
+            if [ "$resource" = issues ]; then
+              issue_iid="$anchor_iid"
+              if [ "$queue_leg" != dev ]; then
+                related="$(curl --fail --silent --show-error --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                  "$CI_API_V4_URL/projects/$CI_PROJECT_ID/issues/$issue_iid/related_merge_requests?per_page=100")"
+                related_ids="$(printf '%s' "$related" | jq -er --argjson project "$CI_PROJECT_ID" '
+                  if type == "array" then [.[] | select(.state == "opened" and .project_id == $project) | .iid | tostring] | join(" ")
+                  else error("Expected a related merge request array") end')"
+                claimed_mrs="$claimed_mrs$related_ids "
+              fi
+            else
+              mr_iid="$anchor_iid"
+              case "$claimed_mrs" in
+                *" $mr_iid "*) echo "Skipping MR !$mr_iid; its issue already has a queued pipeline"; continue ;;
+              esac
+            fi
+            echo "Starting ai-teammate $queue_leg API pipeline for $resource/$anchor_iid"
             payload="$(jq -n --arg ref "$CI_DEFAULT_BRANCH" --arg issue "$issue_iid" --arg username "$username" \
-              --arg factoryHomeRef "$FACTORY_HOME_REF" \
+              --arg mr "$mr_iid" --arg factoryHomeRef "$FACTORY_HOME_REF" \
               '{ref: $ref, variables: [
                 {key: "FACTORY_ISSUE", value: $issue},
-                {key: "FACTORY_MR", value: ""},
+                {key: "FACTORY_MR", value: $mr},
+                {key: "FACTORY_LEG", value: ""},
                 {key: "FACTORY_HOME_REF", value: $factoryHomeRef},
                 {key: "DMTOOLS_AI_TEAMMATE_SCAN", value: "true"},
                 {key: "DMTOOLS_AI_DEV_USERNAME", value: $username}
@@ -575,11 +603,9 @@ ai-teammate-scan:
               --data "$payload" \
               "$CI_API_V4_URL/projects/$CI_PROJECT_ID/pipeline"
             dispatched=$((dispatched + 1))
-          done <<< "$issue_assignees"
-        fi
-        if [ "$count" -lt 100 ]; then
-          break
-        fi
-        page=$((page + 1))
+          done <<< "$queued"
+          if [ "$count" -lt 100 ]; then break; fi
+          page=$((page + 1))
+        done
       done
       echo "Dispatched $dispatched ai-teammate pipelines"

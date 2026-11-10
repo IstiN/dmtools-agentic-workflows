@@ -76,8 +76,13 @@ Caller requirements:
   must provide the required tools in its runner image.
 - Set `DMTOOLS_GITLAB_FACTORY_HELPERS: "true"` to enable the factory-specific
   Git authentication cleanup, assignee resolution, post-development MR
-  verification/labels, cancellation cleanup, and scheduled `agent:dev` issue
-  scanner. These behaviors are opt-in for other callers.
+  verification/labels, and scheduled issue/MR queue scanning. The scanner
+  handles assigned `agent:dev` issues plus `agent:review`/`agent:rework`
+  issues and MRs without requiring the development label or assignment.
+  It skips holds/busy legs/questions, prioritizes rework, and deduplicates
+  related issue/MR dispatches. These factory behaviors are opt-in for other
+  callers; callers that override scan rules must set `FACTORY_HOME_REF` and
+  supply the required tools and role-token setup.
 - `.dmtools/config.js` with `sm.runners.bug`/`story` (or `dev`), `review`,
   and `rework`. **These runners must support GitLab**: GitHub-only packs
   cannot be ported by changing CI YAML. The factory supplies GitLab
@@ -92,14 +97,29 @@ Caller requirements:
   account; `MAX_AUTO_REWORK_ROUNDS` defaults to `2`.
 
 The template honors closed/held items, routes dev/review/rework, posts job
-start/completion notes, and consumes review/rework queue labels. Successful
+start/completion notes, and consumes completed review/rework queue labels. Failed
+or cancelled rework restores `agent:rework`, even if a dispatcher consumed it
+before the job started; only the busy status is cleared. Successful
 development/rework queues review unless the runner requested human input.
+An `ai_developed` issue without a new development request does not fall back
+to development when a review/rework label disappears. `rework-round:N` is
+history, not a queue request: re-add `agent:rework` or dispatch an explicit
+`FACTORY_LEG=rework` to recover an older consumed request.
 Approval labels require successful CI on the captured MR head and GitLab
 mergeability; missing verdicts and ambiguous/changing MR heads escalate to
 `needs-human`. Rework is bounded and provider exhaustion parks the lane with
 `provider_quota`. An approval awaiting CI is reported but not automatically
 reconciled here: the caller must re-dispatch review or supply a reconciler.
 Merging remains caller-owned.
+
+The agent-pack SM currently dispatches `workflow_file=ai-teammate.yml` with
+`issue`, `pr`, and `leg` inputs, sometimes on the MR source branch. Native
+callers must admit these API pipelines and map the inputs to `FACTORY_ISSUE`,
+`FACTORY_MR`, and `FACTORY_LEG` in job rules. Keep the explicit leg: the SM
+may consume a request label immediately after accepting the dispatch.
+
+Run the mocked GitLab lifecycle regression tests with
+`node --test tests/gitlab-templates.test.mjs` (Bash and jq required).
 
 Workspace `.fah` session/memory state persists on `fa-sess/gl-<IID>` or
 `fa-sess/mr-<IID>`; timed-out agent sessions are discarded. Runners storing
