@@ -65,6 +65,19 @@ Caller requirements:
   fallback slots, `KIMI_REVIEW_KEY`, or `CUSTOM_PROVIDER_KEY1..3` with matching
   `CUSTOM_PROVIDER_KEY1_NAME..3_NAME`. Provider queues are passed through
   as `ENV_VAR_DEV_QUEUE` and `ENV_VAR_REVIEW_QUEUE`.
+- If `GITLAB_DEV_TOKEN` is set, the template selects it at runtime as
+  `GITLAB_TOKEN` for development/rework work, and uses `GITLAB_REVIEWER_TOKEN`
+  for review when `DMTOOLS_GITLAB_TEAMMATES: "multiple"`. In multi-teammate
+  mode both tokens are required for their respective legs. This runtime
+  selection ensures project/group variables named `GITLAB_TOKEN` cannot
+  override the selected role token.
+- Set `DMTOOLS_GITLAB_INSTALL_TOOLS: "true"` to install the Debian/Ubuntu
+  runner dependencies with apt. It defaults to false; otherwise the caller
+  must provide the required tools in its runner image.
+- Set `DMTOOLS_GITLAB_FACTORY_HELPERS: "true"` to enable the factory-specific
+  Git authentication cleanup, assignee resolution, post-development MR
+  verification/labels, cancellation cleanup, and scheduled `agent:dev` issue
+  scanner. These behaviors are opt-in for other callers.
 - `.dmtools/config.js` with `sm.runners.bug`/`story` (or `dev`), `review`,
   and `rework`. **These runners must support GitLab**: GitHub-only packs
   cannot be ported by changing CI YAML. The factory supplies GitLab
@@ -119,6 +132,9 @@ branch. Use a trusted Linux runner with Bash, Git, curl, jq, Node.js, GitHub
 CLI, and unzip. Keep `.dmtools/config.js` in the calling repository and set
 masked `GITLAB_TOKEN` (`api` scope, project access) and
 `SOURCE_GITHUB_TOKEN` (GitHub release downloads) as caller CI variables.
+If `GITLAB_DEV_TOKEN` is set, the SM selects it as `GITLAB_TOKEN` at runtime.
+Set `DMTOOLS_GITLAB_INSTALL_TOOLS: "true"` to let the template install tools
+with apt; otherwise keep the required tools in the caller's runner image.
 
 | CI variable | Purpose | Default |
 |---|---|---|
