@@ -35,6 +35,10 @@
 #   vars: MERGE_TRIGGER_ENABLED (fuse — the job skips itself until `true`)
 #   branch protection on main with required checks + strict (the machine
 #   only merges CLEAN PRs, so protection defines what "ready" means).
+#   optional: .dmtools/config.js on the default branch — fetched into the
+#   job CWD so per-repo knobs (machineAuthor, reviewPolicy, jira.fields,
+#   ...) reach the sweep; absent = jobParams-only legacy behavior (empty
+#   machine allowlist = gh-744 "everything human" semantics continue).
 #   github.token is sufficient for everything; pass a PAT via
 #   secrets: inherit if the caller needs one (see GH_TOKEN below).
 
@@ -175,6 +179,68 @@ jobs:
           fi
           bash /tmp/dmtools-install.sh "${DMTOOLS_TAG}"
           echo "$HOME/.dmtools/bin" >> "$GITHUB_PATH"
+
+      # The funnel is otherwise CONFIG-BLIND: the sweep runs checkout-less,
+      # so configLoader.loadProjectConfig() can only see files in the job
+      # CWD (candidate '.dmtools/config.js', js/configLoader.js
+      # buildConfigCandidates) and every per-repo knob — machineAuthor,
+      # reviewPolicy, jira.fields, ... — is invisible. Live hole
+      # (IstiN/dmtools-agents PR #1410, 2026-11-09): the gh-1353/gh-1370
+      # merge backstop's machine-allowlist resolved EMPTY (documented
+      # fail-open: "unconfigured = NOTHING counts as machine-owned"),
+      # the bot's own review thread was classified human ("1 open human
+      # thread(s) stay per gh-744") and the PR merged with an open machine
+      # review thread.
+      # What this reads: ONE file, `.dmtools/config.js`, from the CALLER
+      # repo's default branch, at merge time (live, unpinned — same
+      # semantics as factory-sm.yml's target-repo-root read); evaluated by
+      # the engine's sandboxed config loader (no require, no shell exec).
+      # Fail-open: absent/failed/empty/HTML = legacy jobParams-only
+      # behavior (byte-identical); loadConfigFile catches evaluation
+      # errors -> defaults.
+      # TRUST NOTE: the fetched config is CALLER-controlled (a commit to
+      # the caller's default branch can add machineAuthor entries); listed
+      # logins' open review threads are then auto-resolved by the merge
+      # gate (gh-744 keeps human threads untouched). Same trust model as
+      # factory-sm.yml's target-repo-root read — governed by the same
+      # branch protection that gates merges on that branch.
+      # Scope note (factory doctrine): this workflow is GitHub-only today
+      # (workflow_run/issues events, gh CLI, github_* bridge) — the read
+      # deliberately rides the SAME gh CLI + token chain as every other
+      # step (no raw.githubusercontent host dependency). The SCM-agnostic
+      # endgame — configLoader fetching through the scm layer (github/
+      # gitlab twins) instead of any workflow bash — is tracked as a
+      # follow-up issue; this step is the stopgap that must not hardcode
+      # non-API hosts.
+      - name: Fetch the caller repo's .dmtools/config.js into CWD
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PAT_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p .dmtools
+          # Canonical REST read (gh api, default branch, same auth chain as
+          # the merge itself). ANY gh failure — 404, auth, rate limit, 5xx,
+          # network — exits non-zero and takes the same fail-open path.
+          if ! gh api "repos/${REPO}/contents/.dmtools/config.js" \
+               --jq '.content' > /tmp/repo-config.b64 2>/dev/null; then
+            echo "::warning::gh api read of .dmtools/config.js failed or the file is absent — the funnel runs with jobParams-only (legacy behavior)"
+            exit 0
+          fi
+          if ! base64 -d /tmp/repo-config.b64 > /tmp/repo-config.js 2>/dev/null; then
+            echo "::warning::config decode failed — the funnel runs with jobParams-only (legacy behavior)"
+            exit 0
+          fi
+          if [ ! -s /tmp/repo-config.js ]; then
+            echo "::warning::config decode came back empty — the funnel runs with jobParams-only (legacy behavior)"
+            exit 0
+          fi
+          if grep -qi '<html\|<!DOCTYPE' /tmp/repo-config.js; then
+            echo "::warning::fetched config looks like an HTML error page — ignoring (legacy behavior)"
+            exit 0
+          fi
+          mv /tmp/repo-config.js .dmtools/config.js
+          echo "config fetched: .dmtools/config.js ($(wc -c < .dmtools/config.js) bytes)"
 
       - name: Merge issues labeled pr_approved
         if: steps.gate.outputs.enabled == 'true'
