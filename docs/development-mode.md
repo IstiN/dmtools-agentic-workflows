@@ -78,4 +78,4 @@ fallback (pack dir removed):
 AI_TEAMMATE_CONFIG_FILE=<FACTORY_ROOT>/configs/ai_teammate.json
 ```
 
-Regression case `dev-mode-field` (developmentMode fixture, pack-wins path) ships in `scripts/ab_test/resolve-parent-config.scenario.sh`; the legacy-fallback path with a developmentMode fixture is exercised in the smoke transcript above.
+Pass-through regression evidence: the smoke transcript above (both resolution paths, content-hash proof); the A/B harness (`scripts/ab_test/resolve-parent-config.scenario.sh`) continues to guard resolver behavior byte-for-byte against the pre-de-bloat snapshot.
