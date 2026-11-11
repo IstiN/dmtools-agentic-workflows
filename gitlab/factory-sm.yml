@@ -3,17 +3,12 @@
     - |
       if [[ "${DMTOOLS_GITLAB_INSTALL_TOOLS:-false}" == true ]]; then
         set -eu
-        apt-get -o Acquire::Retries=3 update
-        attempt=1
-        while ! apt-get -o Acquire::Retries=3 install -y --no-install-recommends curl jq git nodejs gh unzip tar coreutils; do
-          if [ "$attempt" -ge 3 ]; then
-            echo "Unable to install required tools after $attempt attempts" >&2
-            exit 1
-          fi
-          attempt=$((attempt + 1))
-          echo "Package install failed; refreshing apt indexes before retry $attempt" >&2
-          apt-get -o Acquire::Retries=3 update
-        done
+        # Index refresh is required: official Debian/Ubuntu images ship without package lists.
+        # Acquire::Retries stays at the distro default (3 on Debian 12+/Ubuntu 22.04+, 0 before),
+        # so older images are not opted into CVE-2026-109518 (retried downloads + hostile mirror).
+        apt-get -o APT::Update::Error-Mode=any update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          ca-certificates curl jq git nodejs gh unzip tar coreutils
       fi
 
 .factory-sm-use-dev-token:
@@ -40,8 +35,6 @@
   variables:
     GIT_DEPTH: "1"
     GIT_SUBMODULE_STRATEGY: none
-    AGENTS_VERSION: latest
-    DMTOOLS_VERSION: latest
     SM_GITLAB_PROJECT: ""
     SM_DRY_RUN: "false"
     SM_MACHINE_AUTHOR: ""
@@ -89,6 +82,8 @@
           gh api "repos/$repository/releases/tags/$knob" --jq .tag_name
         fi
       }
+      # Version knobs are NOT job variables: those would outrank the caller's top-level YAML pins.
+      AGENTS_VERSION="${AGENTS_VERSION:-latest}" DMTOOLS_VERSION="${DMTOOLS_VERSION:-latest}"
       AGENTS_TAG="$(resolve_tag IstiN/dmtools-agents "$AGENTS_VERSION")"
       DMTOOLS_TAG="$(resolve_tag epam/dmtools-dart "$DMTOOLS_VERSION")"
       [[ -n "$AGENTS_TAG" && "$AGENTS_TAG" != null && -n "$DMTOOLS_TAG" && "$DMTOOLS_TAG" != null ]] || {

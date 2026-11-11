@@ -72,8 +72,13 @@ Caller requirements:
   selection ensures project/group variables named `GITLAB_TOKEN` cannot
   override the selected role token.
 - Set `DMTOOLS_GITLAB_INSTALL_TOOLS: "true"` to install the Debian/Ubuntu
-  runner dependencies with apt. It defaults to false; otherwise the caller
-  must provide the required tools in its runner image.
+  runner dependencies with apt (requires root). It defaults to false;
+  otherwise the caller must provide the required tools in its runner image.
+  The opt-in installer must refresh package indexes (official Debian/Ubuntu
+  images ship without them); an index-refresh failure stops the job. Download
+  retries stay at apt's distro default (3 on Debian 12+/Ubuntu 22.04+) and
+  are not forced on older images (CVE-2026-109518). Prefer a
+  caller-maintained image with preinstalled tools to avoid per-job APT work.
 - Set `DMTOOLS_GITLAB_FACTORY_HELPERS: "true"` to enable the factory-specific
   Git authentication cleanup, assignee resolution, post-development MR
   verification/labels, and scheduled issue/MR queue scanning. The scanner
@@ -98,8 +103,13 @@ Caller requirements:
   `decision` or `verdict` in `outputs/pr_review.json` (`APPROVE`,
   `CHANGES_REQUESTED`, or `BLOCK`). Issue reviews resolve exactly one open
   local MR via GitLab's related-MRs API; runners must publish that linkage.
-- `AGENTS_VERSION`, `DMTOOLS_VERSION`, and `FA_VERSION` default to `latest`;
-  concrete release tags pin tooling. `AGENT_HANDLE` identifies the machine
+- `AGENTS_VERSION`, `DMTOOLS_VERSION`, and `FA_VERSION` (`FA_VERSION_MACHINE`
+  wins over `FA_VERSION`) fall back to `latest` at run time when unset or
+  empty, mirroring `vars.X || 'latest'` in GitHub Actions. Concrete release
+  tags pin tooling; set them as project/group CI/CD variables or anywhere in
+  the caller's `.gitlab-ci.yml` (top-level or job `variables:`). The
+  templates deliberately declare no version job variables, because those
+  would outrank a caller's top-level pins. `AGENT_HANDLE` identifies the machine
   account; `MAX_AUTO_REWORK_ROUNDS` defaults to `2`.
 
 The template honors closed/held items, routes dev/review/rework, posts job
@@ -172,7 +182,7 @@ with apt; otherwise keep the required tools in the caller's runner image.
 | `SM_MACHINE_AUTHOR` | Deployment's machine login | Empty, uses pack/config default |
 | `SM_PARALLEL_WORKERS` | Parallel read workers, enabled for values >= 2 | `0`, sequential |
 
-The template validates inputs before installing anything, resolves release
+The template validates inputs before installing the CLI, resolves release
 tags at run time (explicit tags are checked and never floated), installs
 the CLI with an authenticated release-download fallback, and runs
 `sm_gitlab@latest` from the resolved agents release registry. Project identity
@@ -187,11 +197,9 @@ Merges, validation, branch updates, and verdict reconciliation remain
 GitHub-only in the released engine; this CI template does not implement
 those missing engine rules or accept their GitHub-only inputs.
 
-**Contract change:** `.github/workflows/factory-sm.yml` is now GitHub-only.
-The `scm-provider`, `gitlab-project`, `gitlab-base-path` inputs and
-`GITLAB_TOKEN` secret have been removed from that reusable workflow. Existing
-immutable pins keep the old behavior; callers adopting this revision for
-GitLab must migrate to the native template above.
+The existing GitHub reusable workflows are unchanged. GitLab callers adopt
+the native templates above at a new immutable SHA; their release-version
+variables remain caller-owned.
 
 ## The SM kicker: why every machine repo needs it
 

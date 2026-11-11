@@ -3,15 +3,103 @@ import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const yaml = readFileSync(new URL('../gitlab/factory-teammate.yml', import.meta.url), 'utf8') + '\n';
-function script(job, property = 'script') {
-  const section = yaml.slice(yaml.indexOf(`${job}:\n`) + job.length + 2).split(/^\S/m)[0];
+const smYaml = readFileSync(new URL('../gitlab/factory-sm.yml', import.meta.url), 'utf8') + '\n';
+function script(job, property = 'script', source = yaml) {
+  const section = source.slice(source.indexOf(`${job}:\n`) + job.length + 2).split(/^\S/m)[0];
   const match = section.match(new RegExp(`^  ${property}:\\n    - \\|\\n((?:      .*\\n|\\n)+)`, 'm'));
   assert.ok(match, `${job}.${property} shell block`);
   return match[1].replace(/^      /gm, '');
 }
+
+test('all native template shell blocks have valid Bash syntax', () => {
+  for (const source of [yaml, smYaml]) {
+    const blocks = [...source.matchAll(/^    - \|\n((?:      .*\n|\n)+)/gm)];
+    assert.ok(blocks.length > 0);
+    for (const [, block] of blocks) {
+      const result = spawnSync('bash', ['-n'], {
+        input: block.replace(/^      /gm, ''), encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, result.stderr);
+    }
+  }
+});
+
+test('APT setup is opt-in, keeps the distro retry default and stops on update/install failures', () => {
+  const teammate = script('.factory-teammate-install-tools');
+  const sm = script('.factory-sm-install-tools', 'script', smYaml);
+  assert.equal(teammate, sm, 'both templates must install the same prerequisites');
+  const run = (env = {}) => spawnSync('bash', ['-c', `
+    apt-get() {
+      printf 'APT frontend=%s %s\\n' "\${DEBIAN_FRONTEND:-}" "$*" >&2
+      case "$*" in
+        *update) [ "\${FAIL_UPDATE:-}" != true ] ;;
+        *install*) [ "\${FAIL_INSTALL:-}" != true ] ;;
+        *) return 99 ;;
+      esac
+    }
+    ${teammate}
+    echo DONE
+  `], { encoding: 'utf8', env: { PATH: process.env.PATH, ...env } });
+  assert.equal(run().status, 0);
+  assert.doesNotMatch(run().stderr, /APT /, 'prebuilt images do not invoke APT');
+  const enabled = run({ DMTOOLS_GITLAB_INSTALL_TOOLS: 'true' });
+  assert.equal(enabled.status, 0, enabled.stderr);
+  assert.match(enabled.stderr, /APT::Update::Error-Mode=any update/);
+  assert.match(enabled.stderr, /frontend=noninteractive install .*ca-certificates/);
+  assert.doesNotMatch(enabled.stderr, /Acquire::Retries/, 'older apt must not be opted into retries (CVE-2026-109518)');
+  for (const failure of ['FAIL_UPDATE', 'FAIL_INSTALL']) {
+    const result = run({ DMTOOLS_GITLAB_INSTALL_TOOLS: 'true', [failure]: 'true' });
+    assert.notEqual(result.status, 0);
+    assert.doesNotMatch(result.stdout, /DONE/);
+    if (failure === 'FAIL_UPDATE') assert.doesNotMatch(result.stderr, /install/);
+    assert.equal(result.stderr.split('\n').filter(line => line.includes(' install ')).length,
+      failure === 'FAIL_UPDATE' ? 0 : 1, 'no outer retry loop for permanent install failures');
+  }
+});
+
+test('native SM resolves latest once and keeps explicit release tags pinned', () => {
+  const sm = script('.factory-sm', 'script', smYaml);
+  const resolution = sm.slice(sm.indexOf('resolve_tag() {'), sm.indexOf('\ninstall_dir='));
+  const run = (agents, cli, extra = {}) => spawnSync('bash', ['-c', `
+    set -euo pipefail
+    gh() {
+      printf 'GH %s\\n' "$*" >&2
+      case "$2" in
+        */releases/latest) printf '%s\\n' resolved-latest ;;
+        */releases/tags/missing) return 1 ;;
+        */releases/tags/*) printf '%s\\n' "\${2##*/}" ;;
+        *) return 99 ;;
+      esac
+    }
+    ${resolution}
+    printf 'TAGS=%s,%s\\n' "$AGENTS_TAG" "$DMTOOLS_TAG"
+  `], { encoding: 'utf8', env: {
+    PATH: process.env.PATH, AGENTS_VERSION: agents, DMTOOLS_VERSION: cli, ...extra,
+  } });
+  const pinned = run('agents-test-pin', 'cli-test-pin');
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.match(pinned.stdout, /TAGS=agents-test-pin,cli-test-pin/);
+  assert.doesNotMatch(pinned.stderr, /releases\/latest/);
+  const latest = run('latest', 'latest');
+  assert.equal(latest.status, 0, latest.stderr);
+  assert.match(latest.stdout, /TAGS=resolved-latest,resolved-latest/);
+  for (const versions of [['', ''], [undefined, undefined]]) {
+    const defaulted = run(...versions);
+    assert.equal(defaulted.status, 0, defaulted.stderr);
+    assert.match(defaulted.stdout, /TAGS=resolved-latest,resolved-latest/);
+  }
+  for (const versions of [['missing', 'latest'], ['latest', 'missing']]) {
+    const failed = run(...versions);
+    assert.notEqual(failed.status, 0);
+    assert.doesNotMatch(failed.stdout, /TAGS=/);
+  }
+  assert.match(sm, /bash "\$install_dir\/install\.sh" "\$DMTOOLS_TAG"/);
+  assert.match(sm, /DMTOOLS_PACK_REGISTRY="https:\/\/github.com\/IstiN\/dmtools-agents\/releases\/download\/\$AGENTS_TAG"/);
+});
 
 function scan(issues = [], mrs = [], options = {}) {
   return spawnSync('bash', ['-c', `
@@ -139,6 +227,83 @@ test('API failures and malformed responses fail instead of reporting success', (
 });
 
 const main = script('.factory-teammate');
+test('version knobs default at run time so caller YAML, project and pipeline pins win', () => {
+  for (const [source, job] of [[yaml, '.factory-teammate'], [smYaml, '.factory-sm']]) {
+    const section = source.slice(source.indexOf(`${job}:\n`)).split(/^\S/m)[1];
+    const vars = section.slice(section.indexOf('  variables:\n'), section.indexOf('  script:\n'));
+    assert.doesNotMatch(vars, /_VERSION:/, `${job} job variables would outrank caller top-level pins`);
+  }
+  const defaults = main.slice(main.indexOf('export AGENTS_VERSION='), main.indexOf('\n[[ "$FACTORY_HOME_REF"'));
+  const run = env => spawnSync('bash', ['-c', `set -euo pipefail\n${defaults}\necho "$AGENTS_VERSION $DMTOOLS_VERSION $FA_VERSION"`],
+    { encoding: 'utf8', env: { PATH: process.env.PATH, ...env } });
+  assert.equal(run({}).stdout.trim(), 'latest latest latest');
+  assert.equal(run({ AGENTS_VERSION: '', DMTOOLS_VERSION: '', FA_VERSION: '' }).stdout.trim(), 'latest latest latest');
+  assert.equal(run({ AGENTS_VERSION: 'a1', DMTOOLS_VERSION: 'c1', FA_VERSION: 'f1' }).stdout.trim(), 'a1 c1 f1');
+  assert.equal(run({ FA_VERSION: 'f1', FA_VERSION_MACHINE: 'm1' }).stdout.trim(), 'latest latest m1');
+});
+
+test('native teammate passes caller pins through the shared GitHub release resolvers', () => {
+  const install = main.slice(main.indexOf('AGENTS_KNOB="$AGENTS_VERSION"'), main.indexOf('\nfor slot_number'));
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  for (const pinned of [false, true]) {
+    const dir = mkdtempSync(join(tmpdir(), 'gl-versions-'));
+    try {
+      mkdirSync(join(dir, 'workspace'));
+      writeFileSync(join(dir, 'env'), '');
+      writeFileSync(join(dir, 'path'), '');
+      const result = spawnSync('bash', ['-c', `
+        set -euo pipefail
+        gh() {
+          printf 'GH %s\\n' "$*" >&2
+          case "$1 $2" in
+            "release list") printf '%s\\n' agents-resolved-latest ;;
+            "release view") printf '%s\\n' cli-resolved-latest ;;
+            "release download")
+              while [ "$#" -gt 0 ]; do
+                if [ "$1" = --dir ]; then touch "$2/factory-setup-test.zip"; break; fi
+                shift
+              done ;;
+            *) return 99 ;;
+          esac
+        }
+        unzip() {
+          mkdir -p "$4/setup" "$4/configs"
+          touch "$4/setup/cache.sh" "$4/configs/pr_review.json"
+          rm "$2"
+          rmdir "\${2%/*}"
+        }
+        export -f gh unzip
+        bash() {
+          case "\${@: -1}" in
+            */fetch-factory-setup.sh|*/resolve-dmtools-version.sh)
+              helper="\${@: -1}"
+              command bash -e "$SCRIPT_ROOT/scripts/\${helper##*/}" ;;
+            */install-dmtools-cli.sh) printf 'CLI=%s\\n' "$DMTOOLS_VERSION" ;;
+            */install-fa-cli.sh) printf 'FA=%s\\n' "$FA_VERSION" ;;
+            *) return 99 ;;
+          esac
+        }
+        ${main.slice(main.indexOf('import_env() {'), main.indexOf('\nAGENTS_KNOB='))}
+        ${install}
+        printf 'REGISTRY=%s\\n' "$DMTOOLS_PACK_REGISTRY"
+      `], { encoding: 'utf8', env: {
+        PATH: process.env.PATH, HOME: dir, RUNNER_TEMP: dir, SCRIPT_ROOT: root, GITHUB_ENV: join(dir, 'env'),
+        GITHUB_PATH: join(dir, 'path'), GITHUB_WORKSPACE: join(dir, 'workspace'),
+        AGENTS_VERSION: pinned ? 'agents-test-pin' : 'latest',
+        DMTOOLS_VERSION: pinned ? 'cli-test-pin' : 'latest',
+        FA_VERSION: pinned ? 'fa-test-pin' : 'latest',
+      } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, new RegExp(`CLI=${pinned ? 'cli-test-pin' : 'cli-resolved-latest'}`));
+      assert.match(result.stdout, new RegExp(`FA=${pinned ? 'fa-test-pin' : 'latest'}`));
+      assert.match(result.stdout, new RegExp(`REGISTRY=https://github.com/IstiN/dmtools-agents/releases/download/${pinned ? 'agents-test-pin' : 'agents-resolved-latest'}`));
+      if (pinned) assert.doesNotMatch(result.stderr, /GH release (list|view)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test('fresh routing honors an explicit SM rework leg without restarting implemented issues as dev', () => {
   const routing = main.slice(main.indexOf('leg="$FACTORY_LEG"'), main.indexOf('\nslot="$leg"'));
   const run = (labels, leg = '', resource = 'issues') => spawnSync('bash', ['-c', `
@@ -644,8 +809,15 @@ test('scan arms agent:rework once per red machine-authored MR head and escalates
         "GET https://gl/api/v4/projects/5/merge_requests")
           case " $* " in *" page=1 "*) printf '%s' "$MRS" ;; *) printf '[]' ;; esac ;;
         "GET https://gl/api/v4/projects/5/merge_requests/"*/notes)
+          printf 'NOTES %s\\n' "$*" >&2
           if [ "\${FAIL_NOTES:-}" = true ]; then return 22; fi
-          iid="\${url%/notes}"; printf '%s' "$NOTES" | jq -c --arg iid "\${iid##*/}" '.[$iid] // []' ;;
+          note_data="$NOTES"
+          case " $* " in
+            *" page=2 "*)
+              if [ "\${FAIL_NOTES_PAGE_TWO:-}" = true ]; then return 22; fi
+              note_data="$NOTES_PAGE_TWO" ;;
+          esac
+          iid="\${url%/notes}"; printf '%s' "$note_data" | jq -c --arg iid "\${iid##*/}" '.[$iid] // []' ;;
         "GET https://gl/api/v4/projects/5/merge_requests/"*)
           printf '%s' "$MRS" | jq -c --arg iid "\${url##*/}" 'first(.[] | select((.iid | tostring) == $iid))' ;;
         *) printf 'WRITE %s %s%s\\n' "$method" "\${url#https://gl/api/v4/projects/5/}" "$data" >&2; printf '{}' ;;
@@ -653,7 +825,7 @@ test('scan arms agent:rework once per red machine-authored MR head and escalates
     }
     ${scanScript}
   `], { encoding: 'utf8', env: { ...scanEnv, SM_MACHINE_AUTHOR: 'ai-teammate', MRS: JSON.stringify(mrs),
-    ISSUES: '[]', NOTES: '{}', ...extraEnv } });
+    ISSUES: '[]', NOTES: '{}', NOTES_PAGE_TWO: '{}', ...extraEnv } });
   const mr = (iid, extra = {}) => ({
     iid, sha: `head${iid}`, labels: ['validation_failed'], draft: false, author: { username: 'ai-teammate' },
     description: '', source_branch: `feature-${iid}`, head_pipeline: { status: 'failed', sha: `head${iid}` }, ...extra,
@@ -708,4 +880,35 @@ test('scan arms agent:rework once per red machine-authored MR head and escalates
   assert.equal(noNotes.status, 0, 'red-CI arm errors must not fail the scan');
   assert.ok(!writes(noNotes.stderr).some(line => line.includes('agent:rework')), 'unknown marker history fails closed');
   assert.match(noNotes.stderr, /unable to read notes of red MR !2/);
+
+  const recentNotes = Array.from({ length: 100 }, () => ({ body: 'unrelated note' }));
+  const oldMarker = run([mr(2)], {
+    NOTES: JSON.stringify({ 2: recentNotes }),
+    NOTES_PAGE_TWO: JSON.stringify({ 2: [marker('red-ci-arm', 'head2')] }),
+  });
+  assert.equal(oldMarker.status, 0, oldMarker.stderr);
+  assert.match(oldMarker.stderr, /NOTES .*page=2/);
+  assert.ok(writes(oldMarker.stderr).includes('WRITE PUT merge_requests/2 add_labels=needs-human'));
+  assert.ok(!writes(oldMarker.stderr).some(line => line.includes('add_labels=agent:rework')));
+  const laterPageFailure = run([mr(2)], {
+    NOTES: JSON.stringify({ 2: recentNotes }), FAIL_NOTES_PAGE_TWO: 'true',
+  });
+  assert.equal(laterPageFailure.status, 0, laterPageFailure.stderr);
+  assert.match(laterPageFailure.stderr, /unable to read notes of red MR !2/);
+  assert.ok(!writes(laterPageFailure.stderr).some(line => /agent:rework|needs-human/.test(line)));
+  const invalidNotes = run([mr(2)], { NOTES: '{"2":{"message":"invalid"}}' });
+  assert.equal(invalidNotes.status, 0, invalidNotes.stderr);
+  assert.match(invalidNotes.stderr, /invalid notes of red MR !2/);
+  assert.ok(!writes(invalidNotes.stderr).some(line => /agent:rework|needs-human/.test(line)));
+
+  for (const label of ['status:In Development', 'status:In Review', 'ai_questions_asked']) {
+    for (const linked of [false, true]) {
+      const busy = run([mr(2, linked ? { description: 'Closes #11' } : { labels: [label] })], {
+        ISSUES: JSON.stringify([{ iid: 11, state: 'opened', labels: [label] }]),
+      });
+      assert.equal(busy.status, 0, busy.stderr);
+      assert.ok(!writes(busy.stderr).some(line => /agent:rework|needs-human/.test(line)),
+        `${label} on the ${linked ? 'linked issue' : 'MR'} must prevent red-CI arming`);
+    }
+  }
 });

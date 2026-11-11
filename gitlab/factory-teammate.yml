@@ -4,17 +4,12 @@
     - |
       if [[ "${DMTOOLS_GITLAB_INSTALL_TOOLS:-false}" == true ]]; then
         set -eu
-        apt-get -o Acquire::Retries=3 update
-        attempt=1
-        while ! apt-get -o Acquire::Retries=3 install -y --no-install-recommends curl jq git nodejs gh unzip tar coreutils; do
-          if [ "$attempt" -ge 3 ]; then
-            echo "Unable to install required tools after $attempt attempts" >&2
-            exit 1
-          fi
-          attempt=$((attempt + 1))
-          echo "Package install failed; refreshing apt indexes before retry $attempt" >&2
-          apt-get -o Acquire::Retries=3 update
-        done
+        # Index refresh is required: official Debian/Ubuntu images ship without package lists.
+        # Acquire::Retries stays at the distro default (3 on Debian 12+/Ubuntu 22.04+, 0 before),
+        # so older images are not opted into CVE-2026-109518 (retried downloads + hostile mirror).
+        apt-get -o APT::Update::Error-Mode=any update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          ca-certificates curl jq git nodejs gh unzip tar coreutils
       fi
 
 .factory-teammate-use-dev-token:
@@ -251,9 +246,6 @@
     FACTORY_REASON: "pipeline"
     FACTORY_CHECKOUT_REF: ""
     AGENT_HANDLE: ai-teammate
-    AGENTS_VERSION: latest
-    DMTOOLS_VERSION: latest
-    FA_VERSION: latest
     MAX_AUTO_REWORK_ROUNDS: "2"
     AI_AGENT_PROVIDER: fa
   script:
@@ -264,6 +256,10 @@
       done
       : "${GITLAB_TOKEN:?Set a masked GitLab token with api and write_repository scopes}"
       : "${SOURCE_GITHUB_TOKEN:?Set a masked GitHub token for release downloads}"
+      # Version knobs are NOT job variables: those would outrank the caller's top-level YAML pins.
+      # Parity with GitHub: vars.FA_VERSION_MACHINE || vars.FA_VERSION || 'latest', etc.
+      export AGENTS_VERSION="${AGENTS_VERSION:-latest}" DMTOOLS_VERSION="${DMTOOLS_VERSION:-latest}"
+      export FA_VERSION="${FA_VERSION_MACHINE:-${FA_VERSION:-latest}}"
       [[ "$FACTORY_HOME_REF" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "FACTORY_HOME_REF must match the immutable include SHA" >&2; exit 1; }
       if [[ -n "$FACTORY_ISSUE" && -n "$FACTORY_MR" ]] || [[ -z "$FACTORY_ISSUE" && -z "$FACTORY_MR" ]]; then
         echo "Pass exactly one of FACTORY_ISSUE or FACTORY_MR" >&2
@@ -271,7 +267,7 @@
       fi
       number="${FACTORY_MR:-$FACTORY_ISSUE}"
       [[ "$number" =~ ^[1-9][0-9]*$ ]] || { echo "Anchor must be a positive project-local IID" >&2; exit 1; }
-      [[ "$MAX_AUTO_REWORK_ROUNDS" =~ ^[0-9]+$ ]] || exit 1
+      [[ "$MAX_AUTO_REWORK_ROUNDS" =~ ^[0-9]+$ ]] || { echo "MAX_AUTO_REWORK_ROUNDS must be a nonnegative integer" >&2; exit 1; }
       case "$FACTORY_LEG" in ""|dev|bug|story|review|rework) ;; *) echo "Unknown leg: $FACTORY_LEG" >&2; exit 1 ;; esac
       export GITLAB_BASE_PATH="${GITLAB_BASE_PATH:-$CI_SERVER_URL}"
       export GITLAB_WORKSPACE="${CI_PROJECT_PATH%/*}" GITLAB_REPOSITORY="${CI_PROJECT_PATH##*/}"
@@ -688,12 +684,13 @@ ai-teammate-scan:
       machine_author="${SM_MACHINE_AUTHOR:-}"
       armed=0
       arm_red_ci() {
-        local mr_json="$1" mr_iid head issue notes target issue_json
+        local mr_json="$1" mr_iid head issue notes target issue_json notes_page notes_count saw_arm saw_withheld
         printf '%s' "$mr_json" | jq -e --arg machine "$machine_author" --arg assignee "$assignee" '
           .head_pipeline != null and .head_pipeline.sha == .sha and .head_pipeline.status == "failed" and
           ((.author.username // "") as $u | (.author.name // "") as $n |
             ($machine != "" and $u == $machine) or $u == $assignee or $n == $assignee) and
-          ((.labels // []) | any(. == "agent:rework" or . == "status:In Rework" or . == "needs-human" or
+          ((.labels // []) | any(. == "agent:rework" or . == "status:In Rework" or . == "status:In Review" or
+            . == "status:In Development" or . == "ai_questions_asked" or . == "needs-human" or
             . == "blocked" or . == "agent:skip" or . == "provider_quota") | not)' >/dev/null || return 0
         mr_iid="$(printf '%s' "$mr_json" | jq -r .iid)"
         head="$(printf '%s' "$mr_json" | jq -r .sha)"
@@ -706,21 +703,32 @@ ai-teammate-scan:
             return 0
           fi
           if printf '%s' "$issue_json" | jq -e '.state != "opened" or ((.labels // []) | any(. == "agent:rework" or
-            . == "status:In Rework" or . == "needs-human" or . == "blocked" or . == "agent:skip" or . == "provider_quota"))' >/dev/null; then
+            . == "status:In Rework" or . == "status:In Review" or . == "status:In Development" or
+            . == "ai_questions_asked" or . == "needs-human" or . == "blocked" or . == "agent:skip" or . == "provider_quota"))' >/dev/null; then
             return 0
           fi
         fi
         # Fail closed: without the marker history the per-head bound cannot be enforced.
-        if ! notes="$(curl --fail --silent --show-error --header "PRIVATE-TOKEN: $GITLAB_TOKEN" --get \
-          --data-urlencode "per_page=100" --data-urlencode "sort=desc" --data-urlencode "order_by=created_at" \
-          "$api_base/merge_requests/$mr_iid/notes")"; then
-          echo "Warning: unable to read notes of red MR !$mr_iid; rework not armed this tick" >&2
-          return 0
-        fi
-        if printf '%s' "$notes" | jq -e --arg m "<!-- dmtools:red-ci-arm head=$head -->" 'any(.[]?; (.body // "") | contains($m))' >/dev/null; then
-          if printf '%s' "$notes" | jq -e --arg m "<!-- dmtools:red-ci-withheld head=$head -->" 'any(.[]?; (.body // "") | contains($m))' >/dev/null; then
+        notes_page=1; saw_arm=false; saw_withheld=false
+        while :; do
+          if ! notes="$(curl --fail --silent --show-error --header "PRIVATE-TOKEN: $GITLAB_TOKEN" --get \
+            --data-urlencode "per_page=100" --data-urlencode "page=$notes_page" \
+            --data-urlencode "sort=desc" --data-urlencode "order_by=created_at" \
+            "$api_base/merge_requests/$mr_iid/notes")"; then
+            echo "Warning: unable to read notes of red MR !$mr_iid; rework not armed this tick" >&2
             return 0
           fi
+          if ! notes_count="$(printf '%s' "$notes" | jq -er 'if type == "array" then length else error("Expected a notes array") end')"; then
+            echo "Warning: invalid notes of red MR !$mr_iid; rework not armed this tick" >&2
+            return 0
+          fi
+          if printf '%s' "$notes" | jq -e --arg m "<!-- dmtools:red-ci-arm head=$head -->" 'any(.[]; (.body // "") | contains($m))' >/dev/null; then saw_arm=true; fi
+          if printf '%s' "$notes" | jq -e --arg m "<!-- dmtools:red-ci-withheld head=$head -->" 'any(.[]; (.body // "") | contains($m))' >/dev/null; then saw_withheld=true; fi
+          [ "$notes_count" -ge 100 ] || break
+          notes_page=$((notes_page + 1))
+        done
+        if [ "$saw_withheld" = true ]; then return 0; fi
+        if [ "$saw_arm" = true ]; then
           for target in ${issue:+issues/$issue} "merge_requests/$mr_iid"; do
             curl --fail --silent --show-error --header "PRIVATE-TOKEN: $GITLAB_TOKEN" --request PUT \
               --data-urlencode "add_labels=needs-human" "$api_base/$target" >/dev/null \

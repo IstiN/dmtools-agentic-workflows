@@ -27,8 +27,8 @@
 #
 # What it does: resolves the two version knobs, installs the dmtools CLI
 # (release asset, no repo file needed), then runs the SM rule engine as a
-# VERSIONED AGENT PACK (dmtools run sm_github@latest)
-# against the target repo's loop state — the pack carries smAgent.js + rules + engine closure,
+# VERSIONED AGENT PACK (dmtools run sm_github@latest) against the target
+# repo's loop state — the pack carries smAgent.js + rules + engine closure,
 # verified against the release's sha256 inventory.
 #
 # Caller stub:
@@ -63,7 +63,7 @@
 #         # typed (boolean) reusable inputs reject expressions; strings take them.
 #       secrets:
 #         SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
-#
+
 name: 'Factory · Machine SM'
 
 on:
@@ -108,6 +108,7 @@ on:
         required: false
         type: string
         default: ''
+
 # EXACTLY the set factory-sm.yml declares — mapping a secret the callee
 # does not declare is rejected at call time, a missing declared one fails
 # the guard test (factory_stub_ref_test.dart parity in each caller).
@@ -124,6 +125,7 @@ on:
       APP_PRIVATE_KEY:
         description: 'Private key (PEM) of the APP_ID GitHub App.'
         required: false
+
 permissions:
   contents: write         # checkout + silent update-branch pushes
   issues: write           # labels + close-issue safety net
@@ -254,7 +256,6 @@ jobs:
         run: |
           export DMTOOLS_PACK_REGISTRY="https://github.com/IstiN/dmtools-agents/releases/download/${AGENTS_TAG}"
           repo='${{ github.repository }}'
-          target="\"repo\":\"${repo}\""
           # #687: silentToken powers update_branch localActions (github.token
           # pushes trigger no workflows); sourceToken restores the PAT after.
           extra=""
@@ -304,8 +305,8 @@ jobs:
             fi
           fi
           if [ "${{ inputs.dryRun }}" = "true" ]; then
-            override="{\"params\":{\"jobParams\":{${target},\"dryRun\":true${extra}}}}"
+            override="{\"params\":{\"jobParams\":{\"repo\":\"${repo}\",\"dryRun\":true${extra}}}}"
           else
-            override="{\"params\":{\"jobParams\":{${target}${extra}}}}"
+            override="{\"params\":{\"jobParams\":{\"repo\":\"${repo}\"${extra}}}}"
           fi
           dmtools run sm_github@latest "$override"
