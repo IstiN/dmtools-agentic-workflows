@@ -4,7 +4,8 @@
 [dmtools](https://github.com/epam/dmtools-dart) ecosystem.
 
 Today: **GitHub Actions** reusable workflows (the machine-loop factory).
-**GitLab pipelines** can use the teammate and SM templates under `gitlab/`.
+**GitLab pipelines** can use the teammate, SM and CRAP quality-gate templates
+under `gitlab/`.
 The other native GitLab factory pipelines are still planned.
 
 Target repositories (`epam/dmtools-dart`, `IstiN/flutter_agent_harness`,
@@ -196,6 +197,45 @@ the pack's dispatch runners for the caller's native teammate pipeline.
 Merges, validation, branch updates, and verdict reconciliation remain
 GitHub-only in the released engine; this CI template does not implement
 those missing engine rules or accept their GitHub-only inputs.
+
+## Native GitLab quality gates
+
+`gitlab/factory-quality.yml` holds the merge-request CRAP gates as hidden
+jobs, one per stack: `.factory-quality-crap4js`, `.factory-quality-crap4dart`,
+`.factory-quality-crap4java`, `.factory-quality-crap4py` and
+`.factory-quality-crap4go`. Each job fails if the repository does not match
+the selected stack, runs the stack's tests with coverage, and fails when
+coverage is missing or the CRAP analyzer reports a violation. The caller
+owns the image (it selects the toolchain version), stage, rules, needs,
+`allow_failure` and runner tags:
+
+```yaml
+include:
+  - remote: https://raw.githubusercontent.com/IstiN/dmtools-agentic-workflows/<full-SHA>/gitlab/factory-quality.yml
+
+dmtools-quality:
+  extends: .factory-quality-crap4js
+  image: node:22
+  stage: test
+  needs: []
+  allow_failure: false
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+```
+
+| Job | Suggested image | Notes |
+|---|---|---|
+| `.factory-quality-crap4js` | `node:<22+>` | `npm ci`/`npm install`, c8 coverage, `github:IstiN/crap4js` |
+| `.factory-quality-crap4dart` | `ubuntu:24.04` | Installs official Flutter (`DMTOOLS_QUALITY_FLUTTER_VERSION`, default `stable`); `dart format`, analyze, test coverage, `IstiN/crap4dart` |
+| `.factory-quality-crap4java` | `eclipse-temurin:<version>-jdk` | Maven + JaCoCo per module, `IstiN/crap4java` |
+| `.factory-quality-crap4py` | `python:<version>` | pytest coverage, `crap4py` |
+| `.factory-quality-crap4go` | `golang:<version>` | gofmt, vet, race-enabled coverage, `crap4go` |
+
+The Dart job installs Flutter from the official release index because
+third-party Flutter images can lag behind the current Dart SDK. It uses
+`flutter pub get`/`analyze`/`test --coverage` for Flutter projects; set
+`DMTOOLS_QUALITY_FLUTTER_COMMANDS: "false"` to always use the `dart`
+commands. Run the gate tests with `node --test tests/gitlab-quality.test.mjs`.
 
 The existing GitHub reusable workflows are unchanged. GitLab callers adopt
 the native templates above at a new immutable SHA; their release-version
