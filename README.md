@@ -67,8 +67,8 @@ Caller requirements:
   as `ENV_VAR_DEV_QUEUE` and `ENV_VAR_REVIEW_QUEUE`.
 - If `GITLAB_DEV_TOKEN` is set, the template selects it at runtime as
   `GITLAB_TOKEN` for development/rework work, and uses `GITLAB_REVIEWER_TOKEN`
-  for review when `DMTOOLS_GITLAB_TEAMMATES: "multiple"`. In multi-teammate
-  mode both tokens are required for their respective legs. This runtime
+  for review when it is set or when `DMTOOLS_GITLAB_TEAMMATES: "multiple"`.
+  In multi-teammate mode both tokens are required for their respective legs. This runtime
   selection ensures project/group variables named `GITLAB_TOKEN` cannot
   override the selected role token.
 - Set `DMTOOLS_GITLAB_INSTALL_TOOLS: "true"` to install the Debian/Ubuntu
@@ -80,7 +80,13 @@ Caller requirements:
   handles assigned `agent:dev` issues plus `agent:review`/`agent:rework`
   issues and MRs without requiring the development label or assignment.
   It skips holds/busy legs/questions, prioritizes rework, and deduplicates
-  related issue/MR dispatches. These factory behaviors are opt-in for other
+  related issue/MR dispatches. The scan also syncs MR validation labels
+  (`ai_validating`, `ai_validated`, `validation_failed`) from the head
+  pipeline and, once per head SHA, arms `agent:rework` for red CI on MRs
+  authored by `SM_MACHINE_AUTHOR` or the development account; a head that is
+  still red after that rework escalates with `needs-human`. After review and
+  rework legs the helpers also close the cycle labels on the linked issue/MR
+  counterpart. These factory behaviors are opt-in for other
   callers; callers that override scan rules must set `FACTORY_HOME_REF` and
   supply the required tools and role-token setup.
 - `.dmtools/config.js` with `sm.runners.bug`/`story` (or `dev`), `review`,
