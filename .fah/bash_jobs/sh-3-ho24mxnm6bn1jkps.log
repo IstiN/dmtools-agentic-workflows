@@ -1,2 +1,0 @@
-/var/folders/2t/1q0y3w61341cvg39qx11cjt00000gn/T/fa_sh_cmd_FEoAjG/cmd.sh: line 65: syntax error near unexpected token `('
-/var/folders/2t/1q0y3w61341cvg39qx11cjt00000gn/T/fa_sh_cmd_FEoAjG/cmd.sh: line 65: `git --no-pager diff origin/main...HEAD --stat && echo "---" && git --no-pager diff origin/main...HEAD | head -5 && echo "---diff-match-check---" && diff <(git --no-pager diff origin/main...HEAD) input/gh-92/pr.diff && echo "DIFF IDENTICAL" || echo "DIFF DIFFERS"'

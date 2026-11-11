@@ -1,6 +1,0 @@
-→ pack launch.json wins: /var/folders/2t/1q0y3w61341cvg39qx11cjt00000gn/T/tmp.V4UblTiqhb/home/.dmtools/packs/bug_development-1.0.0/launch.json
-exit=0
---- GITHUB_ENV written:
-AI_TEAMMATE_CONFIG_FILE=/var/folders/2t/1q0y3w61341cvg39qx11cjt00000gn/T/tmp.V4UblTiqhb/home/.dmtools/packs/bug_development-1.0.0/launch.json
---- selected file content:
-{"params":{"customParams":{"developmentMode":"plan"}}}
