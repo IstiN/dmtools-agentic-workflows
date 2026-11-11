@@ -35,7 +35,7 @@ consume/add guides.
    caller-side group declared here and the callee's own group deadlocks;
    the CALLER declares concurrency in its stub.
 5. **Engine pin ≠ factory pin.** The `uses:` pin (this repo) and the
-   `factory_ref` input (dmtools-agents SHA) are two independent pins —
+   `AGENTS_VERSION` variable (dmtools-agents release tag) are two independent pins —
    guards in caller repos assert both; never conflate them.
 6. **Triggers stay repo-side.** `on:` blocks cannot be parameterized; the
    stub owns events (issues/cron/workflow_run on the caller's CI name) and

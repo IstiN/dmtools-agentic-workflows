@@ -1,0 +1,45 @@
+---exit=1---
+---ab_test dir---
+ab_test_lib.sh
+apply-review-verdict.scenario.sh
+close-review-cycle.scenario.sh
+close-rework-cycle.scenario.sh
+collect-fa-crash-log.scenario.sh
+dmtools-selfheal.scenario.sh
+export-provider-key-slots.scenario.sh
+extract_stage2.py
+fa-trace-watchdog.scenario.sh
+fetch-factory-setup.scenario.sh
+hand-issue-to-reviewer.scenario.sh
+install-dmtools-cli.scenario.sh
+install-fa-cli.scenario.sh
+mark-job-done.scenario.sh
+mark-job-started.scenario.sh
+persist-fa-memory.scenario.sh
+persist-fa-session.scenario.sh
+publish-token-usage.scenario.sh
+quarantine-fa-session.scenario.sh
+render_old_body.py
+resolve-dmtools-version.scenario.sh
+resolve-parent-config.scenario.sh
+restore-fa-session.scenario.sh
+run_all.sh
+run_gates.sh
+seed-git-excludes.scenario.sh
+stage2_manifest.py
+stall-capture.scenario.sh
+stubs
+teammate-dispatch-gate.scenario.sh
+trace-git-credentials.scenario.sh
+verify-prerequisites.scenario.sh
+write-input-issue.scenario.sh
+write-input-pr.scenario.sh
+---omitted scripts content-agnostic check---
+== scripts/install-dmtools-cli.sh: # Extracted byte-for-byte from .github/workflows/factory-teammate.yml # @ a4cd62f (step: Install dmt
+== scripts/install-fa-cli.sh: # Extracted byte-for-byte from .github/workflows/factory-teammate.yml # @ a4cd62f (step: Install pre
+== scripts/teammate-dispatch-gate.sh: # Extracted byte-for-byte from .github/workflows/factory-teammate.yml # @ a4cd62f (step: Decide whet
+== scripts/trace-git-credentials.sh: # Extracted byte-for-byte from .github/workflows/factory-teammate.yml # @ a4cd62f (step: Trace git c
+== scripts/verify-prerequisites.sh: # Extracted byte-for-byte from .github/workflows/factory-teammate.yml # @ a4cd62f (step: Verify prer
+== scripts/write-input-issue.sh: # Extracted byte-for-byte from .github/workflows/factory-teammate.yml # @ a4cd62f (step: Write the i
+== scripts/write-input-pr.sh: # Extracted byte-for-byte from .github/workflows/factory-teammate.yml # @ a4cd62f (step: Write the P
+== scripts/sm_merge_guard_selftest.sh: # sm_merge_guard_selftest.sh — fixture self-test for the gh-1537 AC5 SM # merge guard (sm_merge_guar

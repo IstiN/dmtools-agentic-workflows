@@ -1,0 +1,21 @@
+.github/workflows/factory-sm.yml:151:          # The pack runner resolves .dmtools/config.js from the CWD —
+.github/workflows/factory-sm.yml:233:        # configLoader discovers .dmtools/config.js exactly like the old
+.github/workflows/factory-sm.yml:308:            override="{\"params\":{\"jobParams\":{\"repo\":\"${repo}\",\"dryRun\":true${extra}}}}"
+.github/workflows/factory-sm.yml:310:            override="{\"params\":{\"jobParams\":{\"repo\":\"${repo}\"${extra}}}}"
+.github/workflows/factory-merge.yml:212:          override="{\"params\":{\"jobParams\":{\"repo\":\"${repo}\",\"ciWorkflow\":\"${CIWF}\"${dry}}}}"
+.github/workflows/factory-merge-trigger.yml:38:#   optional: .dmtools/config.js on the default branch — fetched into the
+.github/workflows/factory-merge-trigger.yml:185:      # CWD (candidate '.dmtools/config.js', js/configLoader.js
+.github/workflows/factory-merge-trigger.yml:194:      # What this reads: ONE file, `.dmtools/config.js`, from the CALLER
+.github/workflows/factory-merge-trigger.yml:215:      - name: Fetch the caller repo's .dmtools/config.js into CWD
+.github/workflows/factory-merge-trigger.yml:225:          if ! gh api "repos/${REPO}/contents/.dmtools/config.js" \
+.github/workflows/factory-merge-trigger.yml:227:            echo "::warning::gh api read of .dmtools/config.js failed or the file is absent — the funnel runs with jobParams-only (legacy behavior)"
+.github/workflows/factory-merge-trigger.yml:230:          if ! base64 -d /tmp/repo-config.b64 > /tmp/repo-config.js 2>/dev/null; then
+.github/workflows/factory-merge-trigger.yml:234:          if [ ! -s /tmp/repo-config.js ]; then
+.github/workflows/factory-merge-trigger.yml:238:          if grep -qi '<html\|<!DOCTYPE' /tmp/repo-config.js; then
+.github/workflows/factory-merge-trigger.yml:242:          mv /tmp/repo-config.js .dmtools/config.js
+===
+518:  # If FA_PROVIDER_TYPE + FA_PROVIDER_CONFIG are not already preconfigured,
+520:  if [ -z "${FA_PROVIDER_TYPE:-}" ] || [ -z "${FA_PROVIDER_CONFIG:-}" ]; then
+546:        export FA_PROVIDER_CONFIG="$(jq -nc \
+557:        export FA_PROVIDER_CONFIG="$(jq -nc \
+568:        export FA_PROVIDER_CONFIG="$(jq -nc \

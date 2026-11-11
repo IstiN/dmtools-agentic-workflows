@@ -1,0 +1,16 @@
+/Users/Yauheni_Navakolski/Documents/IstiN/dmtools-agentic-workflows
+total 32
+drwxr-xr-x  14 Yauheni_Navakolski  staff   448 Nov 11 17:24 .
+drwxr-xr-x@  9 Yauheni_Navakolski  staff   288 Nov  6 14:40 ..
+drwxr-xr-x@  4 Yauheni_Navakolski  staff   128 Nov 11 17:24 .fah
+drwxr-xr-x  15 Yauheni_Navakolski  staff   480 Nov 11 17:23 .git
+drwxr-xr-x   3 Yauheni_Navakolski  staff    96 Nov  2 14:40 .github
+-rw-r--r--   1 Yauheni_Navakolski  staff    19 Nov  2 14:40 .gitignore
+drwxr-xr-x@  5 Yauheni_Navakolski  staff   160 Nov 11 16:28 .idea
+-rw-r--r--   1 Yauheni_Navakolski  staff  3066 Nov  2 14:40 AGENTS.md
+-rw-r--r--   1 Yauheni_Navakolski  staff  7495 Nov  2 14:40 README.md
+drwxr-xr-x@  3 Yauheni_Navakolski  staff    96 Nov 11 17:22 docs
+drwxr-xr-x@  3 Yauheni_Navakolski  staff    96 Nov 11 17:24 input
+drwxr-xr-x   4 Yauheni_Navakolski  staff   128 Nov  2 14:40 kit
+drwxr-xr-x  22 Yauheni_Navakolski  staff   704 Nov 11 17:21 scripts
+drwxr-xr-x   3 Yauheni_Navakolski  staff    96 Nov  2 14:40 skills

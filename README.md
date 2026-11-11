@@ -18,7 +18,7 @@ never need edits to bump a version.
 
 | Workflow | What it does | Caller stub |
 |---|---|---|
-| `factory-teammate.yml` | The issue-driven AI teammate: dev / review / rework legs, sessions, verdict, memory. Runs the agent pack (`bug_development@latest` …) from the dmtools-agents release selected by `factory_ref` / `vars.AGENTS_VERSION`. | `ai-teammate.yml` |
+| `factory-teammate.yml` | The issue-driven AI teammate: dev / review / rework legs, sessions, verdict, memory. Runs the agent pack (`bug_development@latest` …) from the dmtools-agents release selected by `vars.AGENTS_VERSION` / `vars.DMTOOLS_PACK_REGISTRY`. | `ai-teammate.yml` |
 | `factory-sm.yml` | The machine SM tick (`*/10` cron): reconciles PRs/issues against the loop rules — labels, validation arms, dispatches, merges. Runs the SM engine as a versioned agent pack (`sm_github@latest`). | `machine-sm.yml` |
 | `factory-merge.yml` | The event-driven merge bot: reacts to CI conclusions / label changes and squash-merges approved-green PRs within seconds (idempotent against the SM tick). | `machine-merge.yml` |
 | `factory-merge-trigger.yml` | The `pr_approved` merge bot: issue-labeled → linked PR → CLEAN → squash-merge → label removed → issue comment. Parameterized linking (body `Closes #N`, branch `N-…`/`gh-N`, PR-label reverse mapping). | `merge-trigger.yml` |
@@ -90,12 +90,14 @@ loop without its watchdog is the stall we just lived through.
    |---|---|---|
    | `AGENTS_VERSION` | dmtools-agents release tag (`latest` or `agents-rel-…`) | `latest` |
    | `DMTOOLS_VERSION` | dmtools-dart CLI release tag (`latest` or `vX.Y.Z`) | `latest` |
+
+   Dev-leg `developmentMode` knob (dmtools-agents#1440): pass-through + version path — see [`docs/development-mode.md`](docs/development-mode.md).
 3. **`secrets` and `vars` resolve from the CALLER.** These are reusable
    (`workflow_call`) units; `vars.*`/`secrets.*` come from the calling
    repository. Never assume this repo's settings.
 4. **Engine pin ≠ factory pin.** The factory home pin (`uses:`) moves only
-   when a workflow here changes; the engine pin (`factory_ref` input, a
-   dmtools-agents SHA) moves with the engine. Two independent pins — never
+   when a workflow here changes; the engine pin (`vars.AGENTS_VERSION`, a
+   dmtools-agents release tag) moves with the engine. Two independent pins — never
    conflate them, never bump them together by reflex.
 
 ## How to consume (wire a repo to the factory)
@@ -119,7 +121,7 @@ loop without its watchdog is the stall we just lived through.
    PR heads (tag-only gates must NOT be required).
 5. **Guards.** Port `test/machine_kit/factory_stub_ref_test.dart` from dmd:
    every stub must pin an immutable 40-hex SHA; the engine pin rides
-   `factory_ref` (or resolves from releases); secrets mapped explicitly
+   `AGENTS_VERSION` (or resolves from releases); secrets mapped explicitly
    where the callee declares them.
 
 ## How to add / change a workflow here

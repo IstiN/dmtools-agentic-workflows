@@ -1,0 +1,49 @@
+./docs/development-mode.md:18:The script copies a **path**, not content — any new `customParams.*` field passes through untouched. Verified with a fixture pack config carrying `customParams.developmentMode: "plan"`: `resolve-parent-config.sh` selects it unchanged (smoke below). Engine-side resolution was exercised end-to-end by #1435's own leg (ran through `ai-teammate.yml` → `factory-teammate.yml`, `factory_ref` = triggering commit).
+./docs/development-mode.md:36:| **dmtools-agents** (self-hosted engine) | `factory_ref` rides the triggering commit — the factory executes the exact tree under development (see `ai-teammate.yml` header) | **none** — enabling adaptive there is a config flip only (IstiN/dmtools-agents#1438) |
+./README.md:21:| `factory-teammate.yml` | The issue-driven AI teammate: dev / review / rework legs, sessions, verdict, memory. Runs the agent pack (`bug_development@latest` …) from the dmtools-agents release selected by `factory_ref` / `vars.AGENTS_VERSION`. | `ai-teammate.yml` |
+./README.md:97:   when a workflow here changes; the engine pin (`factory_ref` input, a
+./README.md:122:   `factory_ref` (or resolves from releases); secrets mapped explicitly
+./AGENTS.md:38:   `factory_ref` input (dmtools-agents SHA) are two independent pins —
+exit=0
+---commit 2464702---
+commit 24647022ccc711484b2ccc17d0fa71fd6720e508
+Author: Uladzimir Klyshevich <istin2007@gmail.com>
+Date:   Sat Oct 17 00:20:56 2026 +0300
+
+    chore(factory): remove the temporary factory_ref no-op input (#48)
+    
+    All three callers verified clean: dmd #415, dmtools-agents #931, fa
+    #1657 (merged 21:20Z, QG green). The factory_ref era ends here: the
+    engine resolves from dmtools-agents releases (vars, latest default).
+    Incident chain: awf#41/#42 removed it -> startup failures on callers
+    still passing it (#44 restored as no-op) -> each caller swept -> this
+    final cut. LESSON recorded: removing a reusable-workflow input is a
+    breaking change - sweep ALL callers before merging the removal.
+
+ .github/workflows/factory-teammate.yml | 8 --------
+ 1 file changed, 8 deletions(-)
+commit 24647022ccc711484b2ccc17d0fa71fd6720e508
+Author: Uladzimir Klyshevich <istin2007@gmail.com>
+Date:   Sat Oct 17 00:20:56 2026 +0300
+
+    chore(factory): remove the temporary factory_ref no-op input (#48)
+    
+    All three callers verified clean: dmd #415, dmtools-agents #931, fa
+    #1657 (merged 21:20Z, QG green). The factory_ref era ends here: the
+    engine resolves from dmtools-agents releases (vars, latest default).
+    Incident chain: awf#41/#42 removed it -> startup failures on callers
+    still passing it (#44 restored as no-op) -> each caller swept -> this
+    final cut. LESSON recorded: removing a reusable-workflow input is a
+    breaking change - sweep ALL callers before merging the removal.
+--
++++ b/.github/workflows/factory-teammate.yml
+@@ -82,14 +82,6 @@ on:
+         description: 'Why this dispatch (audit trail, shown in logs)'
+         required: false
+         type: string
+-      factory_ref:
+-        # TEMPORARY no-op (2026-10-16 incident: legs startup_fail while
+-        # callers still send it — fa wrapper fix in flight, agents done in
+-        # #931). Remove AGAIN only after EVERY caller stops passing it.
+-        description: 'Deprecated, unread no-op. Do not use.'
+-        required: false

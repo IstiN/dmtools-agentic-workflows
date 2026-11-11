@@ -1,0 +1,72 @@
+      factory_home_ref:
+        description: Awf ref the caller pinned factory-teammate.yml to
+        type: string
+        required: false
+        default: main
+      runner:
+        description: 'Runner label (self-hosted pools must be visible to the CALLING org)'
+        type: string
+        default: 'ubuntu-slim'
+      issue:
+        description: 'Issue number (string: number-typed reusable inputs cannot take expressions). Empty when pr is given (PR-anchored run, #687).'
+        required: false
+        type: string
+      pr:
+        description: 'PR number for PR-anchored runs (review leg on PRs born without an issue, #687). Exactly one of issue|pr must be set.'
+        required: false
+        type: string
+      checkout_ref:
+        description: 'IstiN/dmtools-agents#1096 (gh-1075 fork-PR dispatch): refs/pull/<N>/head to check out instead of the dispatch ref, so a fork leg works the PR head tree. Empty = default checkout (byte-identical).'
+        required: false
+        type: string
+        default: ''
+      machine-author:
+        description: "Deployment's machine (bot) login (#687): gates rework re-arm in PR-anchored reviews (auto-approve via pr_approved is author-agnostic per the owner rule). Injected as jobParams.machineAuthor — branch-independent (the checked-out PR branch carries no machineAuthor config)."
+        required: false
+        type: string
+        default: ''
+      leg:
+        description: "Which leg to run: dev | review | rework (empty = derive from labels/assignees)"
+        required: false
+        type: string
+      reason:
+        description: 'Why this dispatch (audit trail, shown in logs)'
+        required: false
+        type: string
+      # Optional agent-work toolchains (salvaged from #35): "" (default)
+      # installs NOTHING — explicit opt-in per caller. The dmtools engine
+      # and its dart runtime are installed by install-dmtools-cli.sh and
+      # are NEVER gated on these inputs.
+      java-version:
+        description: 'JDK for agent work (Temurin, Gradle/Maven cache). "" (default) installs NOTHING. e.g. "21".'
+        required: false
+        default: ''
+        type: string
+      node-version:
+        description: 'Node.js for agent work (npm cache). "" (default) installs NOTHING. e.g. "20".'
+---inputs summary---
+56:        description: Awf ref the caller pinned factory-teammate.yml to
+57:        type: string
+58:        required: false
+59:        default: main
+61:        description: 'Runner label (self-hosted pools must be visible to the CALLING org)'
+62:        type: string
+63:        default: 'ubuntu-slim'
+65:        description: 'Issue number (string: number-typed reusable inputs cannot take expressions). Empty when pr is given (PR-anchored run, #687).'
+66:        required: false
+67:        type: string
+69:        description: 'PR number for PR-anchored runs (review leg on PRs born without an issue, #687). Exactly one of issue|pr must be set.'
+70:        required: false
+71:        type: string
+73:        description: 'IstiN/dmtools-agents#1096 (gh-1075 fork-PR dispatch): refs/pull/<N>/head to check out instead of the dispatch ref, so a fork leg works the PR head tree. Empty = default checkout (byte-identical).'
+74:        required: false
+75:        type: string
+76:        default: ''
+78:        description: "Deployment's machine (bot) login (#687): gates rework re-arm in PR-anchored reviews (auto-approve via pr_approved is author-agnostic per the owner rule). Injected as jobParams.machineAuthor — branch-independent (the checked-out PR branch carries no machineAuthor config)."
+79:        required: false
+80:        type: string
+81:        default: ''
+83:        description: "Which leg to run: dev | review | rework (empty = derive from labels/assignees)"
+84:        required: false
+85:        type: string
+87:        description: 'Why this dispatch (audit trail, shown in logs)'

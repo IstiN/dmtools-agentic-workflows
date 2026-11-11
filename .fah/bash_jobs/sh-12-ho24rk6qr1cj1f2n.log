@@ -1,0 +1,10 @@
+README.md:21:| `factory-teammate.yml` | The issue-driven AI teammate: dev / review / rework legs, sessions, verdict, memory. Runs the agent pack (`bug_development@latest` …) from the dmtools-agents release selected by `factory_ref` / `vars.AGENTS_VERSION`. | `ai-teammate.yml` |
+README.md:97:   when a workflow here changes; the engine pin (`factory_ref` input, a
+README.md:122:   `factory_ref` (or resolves from releases); secrets mapped explicitly
+---
+2464702 chore(factory): remove the temporary factory_ref no-op input (#48)
+8a2b946 chore(factory): remove the temporary factory_ref no-op input
+97464f0 feat: optional toolchain inputs + GitHub App merge identity (salvage of #35) (#46)
+89be070 feat: optional toolchain inputs (teammate) + GitHub App merge identity (merge)
+6ed2539 hotfix: factory_ref back as optional no-op (fa legs startup_fail) (#44)
+---on main?---

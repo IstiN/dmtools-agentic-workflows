@@ -1,0 +1,14 @@
+docs/development-mode.md:1:# Development mode (`developmentMode`) — factory pass-through & version path
+docs/development-mode.md:7:`params.customParams.developmentMode` ∈ `default | plan | adaptive` (missing/invalid ⇒ `default`, zero behavior change) — implemented engine-side (dmtools-agents#1435, merged 2026-11-11 via #1441). Optional tuning lives under `customParams.developmentModeConfig` (plan/adaptive/spawn slices).
+docs/development-mode.md:16:2. `AI_TEAMMATE_CONFIG_FILE=<path>` rides `GITHUB_ENV` → the engine (js) reads the file, validates `developmentMode`, resolves the mode, logs `developmentMode=<resolved>`.
+docs/development-mode.md:18:The script copies a **path**, not content — any new `customParams.*` field passes through untouched. Verified with a fixture pack config carrying `customParams.developmentMode: "plan"`: `resolve-parent-config.sh` selects it unchanged (smoke below). Engine-side resolution was exercised end-to-end by #1435's own leg (ran through `ai-teammate.yml` → `factory-teammate.yml`, `factory_ref` = triggering commit).
+docs/development-mode.md:44:`developmentMode` touches only leg-config content; a sweep of every wrapper file found **no pass-through risk**:
+docs/development-mode.md:54:**Result: no wrapper change required for any developmentMode slice (plan / adaptive / spawn).** Future leg-config fields follow the same path — this document is the reference to check instead of re-litigating.
+---
+docs/development-mode.md:1:# Development mode (`developmentMode`) — factory pass-through & version path
+docs/development-mode.md:7:`params.customParams.developmentMode` ∈ `default | plan | adaptive` (missing/invalid ⇒ `default`, zero behavior change) — implemented engine-side (dmtools-agents#1435, merged 2026-11-11 via #1441). Optional tuning lives under `customParams.developmentModeConfig` (plan/adaptive/spawn slices).
+docs/development-mode.md:16:2. `AI_TEAMMATE_CONFIG_FILE=<path>` rides `GITHUB_ENV` → the engine (js) reads the file, validates `developmentMode`, resolves the mode, logs `developmentMode=<resolved>`.
+docs/development-mode.md:18:The script copies a **path**, not content — any new `customParams.*` field passes through untouched. Verified with a fixture pack config carrying `customParams.developmentMode: "plan"`: `resolve-parent-config.sh` selects it unchanged (smoke below). Engine-side resolution was exercised end-to-end by #1435's own leg (ran through `ai-teammate.yml` → `factory-teammate.yml`, `factory_ref` = triggering commit).
+docs/development-mode.md:44:`developmentMode` touches only leg-config content; a sweep of every wrapper file found **no pass-through risk**:
+docs/development-mode.md:54:**Result: no wrapper change required for any developmentMode slice (plan / adaptive / spawn).** Future leg-config fields follow the same path — this document is the reference to check instead of re-litigating.
+exit=0

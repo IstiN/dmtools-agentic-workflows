@@ -1,0 +1,10 @@
+=== JSON severities (byte-level) ===
+severities: ['BLOCKING', 'IMPORTANT', 'NIT', 'SUGGESTION']
+canonical 4-tier spelling OK (SUGGESTION, double-G)
+=== comment files spellings ===
+outputs/pr_review_comments/comment3.md
+outputs/pr_review_comments/comment4.md
+outputs/pr_review_comments/comment5.md
+outputs/pr_review_comments/comment3.md:0
+outputs/pr_review_comments/comment4.md:0
+outputs/pr_review_comments/comment5.md:0
