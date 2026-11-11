@@ -61,8 +61,6 @@ The "forgotten bump" failure mode (pinned consumer silently runs pre-feature eng
 ## Related
 - Epic: dmtools-agents#1440 · knob #1435 · plan-mode #1436 · adaptive #1437 · rollout #1438 (references this doc).
 - Pin knob semantics: awf#25 · config acquisition rollout: awf#91.
-
-
 ## Smoke evidence (AC1)
 
 ```
@@ -80,4 +78,4 @@ fallback (pack dir removed):
 AI_TEAMMATE_CONFIG_FILE=<FACTORY_ROOT>/configs/ai_teammate.json
 ```
 
-Regression case `dev-mode-field` (developmentMode fixture, both resolution paths) ships in `scripts/ab_test/resolve-parent-config.scenario.sh`.
+Regression case `dev-mode-field` (developmentMode fixture, pack-wins path) ships in `scripts/ab_test/resolve-parent-config.scenario.sh`; the legacy-fallback path with a developmentMode fixture is exercised in the smoke transcript above.
