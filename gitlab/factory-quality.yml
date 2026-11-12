@@ -1,0 +1,133 @@
+# Shared CRAP quality gates for GitLab merge-request pipelines.
+# Extend one hidden .factory-quality-<preset> job; the caller owns stage, image,
+# rules, needs, allow_failure and runner tags (see README "Native GitLab quality gates").
+
+.factory-quality-crap4js:
+  before_script: []
+  after_script: []
+  script:
+    - |
+      if [ ! -f package.json ]; then echo "Configured quality gate does not match this repository: missing package.json" >&2; exit 1; fi
+      if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.test && !p.scripts.test.includes('Error: no test specified') ? 0 : 1)"; then
+        npx c8 --reporter=json --reporter=text npm test
+        if [ ! -s coverage/coverage-final.json ]; then echo "Missing JavaScript coverage data; CRAP analysis cannot run." >&2; exit 1; fi
+        npx --yes github:IstiN/crap4js --coverage coverage/coverage-final.json
+      else
+        echo "No tests configured — skipping coverage and CRAP analysis."
+      fi
+
+.factory-quality-crap4dart:
+  before_script: []
+  after_script: []
+  script:
+    - |
+      if [ ! -f pubspec.yaml ]; then echo "Configured quality gate does not match this repository: missing pubspec.yaml" >&2; exit 1; fi
+      apt-get -o Acquire::Retries=3 update
+      apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates curl git jq unzip xz-utils
+      DMTOOLS_FLUTTER_VERSION="${DMTOOLS_QUALITY_FLUTTER_VERSION:-stable}"
+      set -euo pipefail
+      toolchain_root="${DMTOOLS_TOOLCHAINS_DIR:-$HOME/.dmtools-toolchains}"
+      mkdir -p "$toolchain_root/bin"
+      case "$(uname -m)" in
+        x86_64|amd64) toolchain_arch=amd64; node_arch=x64 ;;
+        aarch64|arm64) toolchain_arch=arm64; node_arch=arm64 ;;
+        *) echo "Unsupported runner architecture for agent toolchains: $(uname -m)" >&2; exit 1 ;;
+      esac
+      toolchain_fetch() { curl --silent --show-error --fail --location --retry 3 --connect-timeout 15 "$@"; }
+      if [ -n "$DMTOOLS_FLUTTER_VERSION" ]; then
+        apt-get -o Acquire::Retries=3 install -y --no-install-recommends xz-utils
+        rm -rf "$toolchain_root/flutter"
+        if [ "$toolchain_arch" = amd64 ]; then
+          flutter_releases="$(toolchain_fetch https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json)"
+          flutter_archive="$(jq -r --arg channel "$DMTOOLS_FLUTTER_VERSION" \
+            '.current_release[$channel] as $hash | first(.releases[] | select(.hash == $hash and .channel == $channel) | .archive) // empty' \
+            <<< "$flutter_releases")"
+          [ -n "$flutter_archive" ] || { echo "Flutter channel $DMTOOLS_FLUTTER_VERSION is not available" >&2; exit 1; }
+          toolchain_fetch "$(jq -r .base_url <<< "$flutter_releases")/$flutter_archive" |
+            tar -xJ --no-same-owner -C "$toolchain_root"
+        else
+          git clone --quiet --branch "$DMTOOLS_FLUTTER_VERSION" https://github.com/flutter/flutter.git "$toolchain_root/flutter"
+        fi
+        git config --global --add safe.directory "$toolchain_root/flutter"
+        export PATH="$toolchain_root/flutter/bin:$toolchain_root/flutter/bin/cache/dart-sdk/bin:$HOME/.pub-cache/bin:$PATH"
+        flutter --disable-analytics >/dev/null
+        flutter --version
+      fi
+      quality_flutter=false
+      if [ "${DMTOOLS_QUALITY_FLUTTER_COMMANDS:-true}" = true ] && grep -Eq '^  flutter:' pubspec.yaml; then quality_flutter=true; fi
+      if [ "$quality_flutter" = true ]; then flutter pub get; else dart pub get; fi
+      if ! dart format --output=none --set-exit-if-changed .; then echo "Dart formatting check failed: run 'dart format .' and commit the changes." >&2; exit 1; fi
+      if [ "$quality_flutter" = true ]; then flutter analyze; else dart analyze; fi
+      if [ ! -d test ] || [ -z "$(find test -name '*_test.dart' -print -quit 2>/dev/null)" ]; then echo "No Dart tests found — skipping coverage and CRAP analysis."; exit 0; fi
+      if [ "$quality_flutter" = true ]; then
+        flutter test --coverage
+      else
+        dart test --coverage=coverage
+        dart pub global activate coverage
+        dart pub global run coverage:format_coverage --lcov --in coverage --out coverage/lcov.info --report-on lib
+      fi
+      if [ ! -s coverage/lcov.info ]; then echo "Missing Dart coverage data; CRAP analysis cannot run." >&2; exit 1; fi
+      dart pub global activate -sgit https://github.com/IstiN/crap4dart.git
+      dart pub global run crap4dart:crap4dart analyze --lcov coverage/lcov.info
+
+.factory-quality-crap4java:
+  before_script: []
+  after_script: []
+  script:
+    - |
+      if [ ! -f pom.xml ] || [ -z "$(find . -type f -name '*.java' -path '*/src/*' -not -path './.*' -not -path '*/target/*' -print -quit)" ]; then echo "Configured quality gate does not match this repository: missing Maven pom.xml or Java source files under src/" >&2; exit 1; fi
+      apt-get update && apt-get install -y --no-install-recommends git maven
+      tool_dir=$(mktemp -d /tmp/dmtools-crap4java.XXXXXX)
+      trap 'rm -rf "$tool_dir"' EXIT
+      git clone --depth 1 https://github.com/IstiN/crap4java.git "$tool_dir/source"
+      mvn -q -f "$tool_dir/source/pom.xml" -DskipTests package
+      set -- "$tool_dir"/source/target/crap4java-*.jar
+      if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then echo "Could not build the crap4java analyzer." >&2; exit 1; fi
+      find . -type f -name '*.java' -path '*/src/*' -not -path './.*' -not -path '*/target/*' -print0 | xargs -0 java -jar "$1"
+      if [ -z "$(find . -type f -path '*/target/site/jacoco/jacoco.xml' -size +0c -print -quit)" ]; then echo "Missing JaCoCo coverage data; CRAP analysis cannot run." >&2; exit 1; fi
+      find . -type f -name pom.xml -not -path './.*' -not -path '*/target/*' -not -path '*/src/*' -exec sh -c '
+        for pom do
+          module=${pom%/pom.xml}
+          if [ -d "$module/src" ] && [ -n "$(find "$module/src" -type f -name "*.java" -print -quit)" ] && [ ! -s "$module/target/site/jacoco/jacoco.xml" ]; then
+            echo "Missing JaCoCo coverage for $module." >&2; exit 1
+          fi
+        done
+      ' sh {} +
+
+.factory-quality-crap4py:
+  before_script: []
+  after_script: []
+  script:
+    - |
+      if [ -z "$(find . -name '*.py' -not -path './.*' -not -path './venv/*' -print -quit)" ]; then echo "Configured quality gate does not match this repository: missing Python source files" >&2; exit 1; fi
+      python -m pip install --upgrade pip
+      if [ -f pyproject.toml ] || [ -f setup.py ]; then pip install -e .; fi
+      if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      pip install coverage pytest git+https://github.com/vabhzw17eg2qu4m9-bit/crap4py.git
+      set +e
+      coverage run -m pytest
+      test_status=$?
+      set -e
+      if [ "$test_status" -eq 5 ]; then echo "No tests collected — skipping coverage and CRAP analysis."; exit 0; elif [ "$test_status" -ne 0 ]; then exit "$test_status"; fi
+      coverage json -o coverage.json
+      crap4py --coverage coverage.json
+
+.factory-quality-crap4go:
+  before_script: []
+  after_script: []
+  script:
+    - |
+      if [ ! -f go.mod ]; then echo "Configured quality gate does not match this repository: missing go.mod" >&2; exit 1; fi
+      if [ -z "$(find . -name '*.go' -not -path './.*' -print -quit)" ]; then echo "Configured quality gate does not match this repository: missing Go source files" >&2; exit 1; fi
+      unformatted=$(gofmt -l .)
+      if [ -n "$unformatted" ]; then echo "Files need gofmt:"; echo "$unformatted"; exit 1; fi
+      go vet ./...
+      if [ -z "$(find . -name '*_test.go' -not -path './.*' -print -quit)" ]; then echo "No Go tests found — skipping coverage and CRAP analysis."; exit 0; fi
+      go test -race -coverprofile=coverage.out -covermode=atomic ./...
+      if [ ! -s coverage.out ]; then echo "Missing Go coverage data; CRAP analysis cannot run." >&2; exit 1; fi
+      tool_dir=$(mktemp -d /tmp/dmtools-crap4go.XXXXXX)
+      trap 'rm -rf "$tool_dir"' EXIT
+      git clone --depth 1 https://github.com/vabhzw17eg2qu4m9-bit/crap4go.git "$tool_dir/source"
+      (cd "$tool_dir/source" && go build -o "$tool_dir/crap4go" .)
+      "$tool_dir/crap4go" --coverage coverage.out
