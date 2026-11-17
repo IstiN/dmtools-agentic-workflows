@@ -80,12 +80,13 @@ on:
         description: 'DEPRECATED pre-awf#52 alias of APP_PRIVATE_KEY — still honored.'
         required: false
 
-# NOTE: NO concurrency block here — deliberately. A called workflow's
-# concurrency NEVER applies (GitHub ignores it; only the caller's does),
-# and a caller + callee sharing the SAME group name makes every run fail
-# at startup with zero jobs and no annotations (live bisect 2026-09-22:
-# probes D-G green without it, H red with group name collision, H1 green
-# after rename). The caller stub owns the group (machine-merge-bot).
+# NOTE: NO concurrency block here — deliberately. A reusable workflow's
+# concurrency IS evaluated (in the caller's context — live bisect
+# 2026-09-22: probes D-G green without any callee block, H red with a
+# group name collision, H1 green after rename), so a caller + callee
+# sharing the SAME group name would collide. This workflow declares no
+# group and the caller stub owns it (machine-merge-bot) — distinct
+# names never collide by construction.
 
 permissions:
   contents: read

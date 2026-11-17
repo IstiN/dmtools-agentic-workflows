@@ -129,7 +129,10 @@ loop without its watchdog is the stall we just lived through.
   re-pin + update their guard constants in the same motion.
 - New reusable workflows follow the house pattern: `workflow_call` inputs
   with safe defaults, everything repo-specific parameterized, no versions
-  hardcoded, `concurrency` owned by the caller (never declared inside a
-  reusable unit).
+  hardcoded, single-flight `concurrency` owned by the factory workflow
+  itself (evaluated in the caller's context — scope per target repo via
+  `${{ github.repository }}` or per head via `${{ github.sha }}`; caller
+  stubs stay concurrency-free — a same-name caller group deadlocks the
+  reusable call).
 - GitLab pipelines (future): same freeze contract, `gitlab/` namespace,
   mirrored semantics — the stub/pin discipline is CI-system-agnostic.
