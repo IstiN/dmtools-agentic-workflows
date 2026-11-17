@@ -126,6 +126,22 @@ on:
         description: 'Private key (PEM) of the APP_ID GitHub App.'
         required: false
 
+# Single-flight for the SM tick — restored from the pre-freeze factory
+# copy (dmtools-agents f377609 carried this exact block; the freeze
+# reorganization dropped it while the stub contract kept promising "the
+# factory owns the machine-sm group"). Live overlap that motivates this:
+# two cron ticks ran concurrently for ~7 minutes in flutter_agent_harness
+# on 2026-11-17 12:55 (IstiN/flutter_agent_harness#2244), and the
+# dmtools-dart stub documents the same broken contract.
+# GitHub scopes concurrency groups to ONE repository and evaluates them
+# in the caller's context, so every target repo gets its own group —
+# repos never queue each other. Caller stubs must NOT declare a
+# same-name group: a caller-held group deadlocks the reusable call
+# (live-learned, fa stub comment); the callee owns it alone.
+concurrency:
+  group: machine-sm
+  cancel-in-progress: false
+
 permissions:
   contents: write         # checkout + silent update-branch pushes
   issues: write           # labels + close-issue safety net
