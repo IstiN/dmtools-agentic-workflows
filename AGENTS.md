@@ -31,9 +31,20 @@ consume/add guides.
 3. **`secrets` and `vars` resolve from the CALLER.** These workflows run as
    reusable (`workflow_call`) units; `vars.*`/`secrets.*` referenced here
    come from the calling repository. Never assume this repo's settings.
-4. **No `concurrency` blocks in reusable workflows.** GitHub ignores a
-   caller-side group declared here and the callee's own group deadlocks;
-   the CALLER declares concurrency in its stub.
+4. **Concurrency is callee-owned here; caller stubs stay concurrency-free.**
+   A reusable workflow's `concurrency` IS evaluated — in the caller's
+   context (live bisect 2026-09-22: probes D–G green without any callee
+   block, H red on a caller/callee same-name collision, H1 green after
+   rename). What deadlocks a reusable call ("pending, 0 jobs") is a
+   caller declaring the SAME group name the callee holds. So the factory
+   workflow that needs single-flight owns its group here — scoped per
+   target repo via `${{ github.repository }}`, per head via
+   `${{ github.sha }}` (template: the `CONSUMERS:` note in
+   `factory-sm-kicker.yml`), or a bare literal (`machine-sm` in
+   `factory-sm.yml` — no template needed: GitHub namespaces concurrency
+   groups per repository, so a bare name can never collide across
+   repos) — and caller stubs must NOT declare a same-name group for
+   factory-owned legs.
 5. **Engine pin ≠ factory pin.** The `uses:` pin (this repo) and the
    `factory_ref` input (dmtools-agents SHA) are two independent pins —
    guards in caller repos assert both; never conflate them.
