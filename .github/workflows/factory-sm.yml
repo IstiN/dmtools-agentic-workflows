@@ -73,6 +73,11 @@ on:
         description: 'Runner label (self-hosted pools must be visible to the CALLING org)'
         type: string
         default: 'ubuntu-slim'
+      timeout-minutes:
+        description: "Hard cap for the whole tick job (minutes). A hung tick must not hold the machine-sm single-flight group forever: at the cap GitHub kills the job, the group frees, and the queued next tick runs. Default 30 covers ~2x the worst observed pre-io-cache-fix tick (14.7m, fah#2244); trim down after the pack perf fix settles. STRING — reusable inputs are strings here."
+        required: false
+        type: string
+        default: '30'
       dryRun:
         description: "'true' to log the plan without acting (STRING — boolean-typed reusable inputs cannot take expressions, live bisect probes D/E)"
         required: false
@@ -160,6 +165,11 @@ jobs:
   sm:
     name: sm / reconcile
     runs-on: ${{ inputs.runner }}
+    # The single-flight group is held for exactly this long, at most: a hung
+    # tick dies here instead of holding the group until GitHub's 360m default
+    # (fah#2244 follow-up). The only thing a tick ever blocks is the next
+    # queued tick (1 running + 1 pending; newer triggers replace older pendings).
+    timeout-minutes: ${{ inputs.timeout-minutes || '30' }}
     steps:
       - name: Checkout target repository
         uses: actions/checkout@v7
