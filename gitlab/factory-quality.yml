@@ -12,7 +12,12 @@
       if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.test && !p.scripts.test.includes('Error: no test specified') ? 0 : 1)"; then
         npx c8 --reporter=json --reporter=text npm test
         if [ ! -s coverage/coverage-final.json ]; then echo "Missing JavaScript coverage data; CRAP analysis cannot run." >&2; exit 1; fi
-        npx --yes github:IstiN/crap4js --coverage coverage/coverage-final.json
+        if [ -n "${CRAP4JS_FILES:-}" ]; then
+          echo "Analyzing CRAP for: $CRAP4JS_FILES"
+          npx --yes github:IstiN/crap4js --coverage-dir coverage $CRAP4JS_FILES
+        else
+          npx --yes github:IstiN/crap4js --coverage coverage/coverage-final.json
+        fi
       else
         echo "No tests configured — skipping coverage and CRAP analysis."
       fi

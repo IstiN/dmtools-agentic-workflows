@@ -225,7 +225,7 @@ dmtools-quality:
 
 | Job | Suggested image | Notes |
 |---|---|---|
-| `.factory-quality-crap4js` | `node:<22+>` | `npm ci`/`npm install`, c8 coverage, `github:IstiN/crap4js` |
+| `.factory-quality-crap4js` | `node:<22+>` | `npm ci`/`npm install`, c8 coverage, `github:IstiN/crap4js`; set `CRAP4JS_FILES` to a space-separated file list to analyze only those files instead of the whole repo |
 | `.factory-quality-crap4dart` | `ubuntu:24.04` | Installs official Flutter (`DMTOOLS_QUALITY_FLUTTER_VERSION`, default `stable`); `dart format`, analyze, test coverage, `IstiN/crap4dart` |
 | `.factory-quality-crap4java` | `eclipse-temurin:<version>-jdk` | Maven + JaCoCo per module, `IstiN/crap4java` |
 | `.factory-quality-crap4py` | `python:<version>` | pytest coverage, `crap4py` |
