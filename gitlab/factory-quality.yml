@@ -14,7 +14,7 @@
         if [ ! -s coverage/coverage-final.json ]; then echo "Missing JavaScript coverage data; CRAP analysis cannot run." >&2; exit 1; fi
         if [ -n "${CRAP4JS_FILES:-}" ]; then
           echo "Analyzing CRAP for: $CRAP4JS_FILES"
-          npx --yes github:IstiN/crap4js --coverage-dir coverage $CRAP4JS_FILES
+          npx --yes github:IstiN/crap4js --coverage coverage/coverage-final.json $CRAP4JS_FILES
         else
           npx --yes github:IstiN/crap4js --coverage coverage/coverage-final.json
         fi
