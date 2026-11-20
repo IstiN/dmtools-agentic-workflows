@@ -1,0 +1,113 @@
+.factory-sm-install-tools:
+  script:
+    - |
+      if [[ "${DMTOOLS_GITLAB_INSTALL_TOOLS:-false}" == true ]]; then
+        set -eu
+        # Index refresh is required: official Debian/Ubuntu images ship without package lists.
+        # Acquire::Retries stays at the distro default (3 on Debian 12+/Ubuntu 22.04+, 0 before),
+        # so older images are not opted into CVE-2026-109518 (retried downloads + hostile mirror).
+        apt-get -o APT::Update::Error-Mode=any update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          ca-certificates curl jq git nodejs gh unzip tar coreutils
+      fi
+
+.factory-sm-use-dev-token:
+  script:
+    - |
+      if [ -n "${GITLAB_DEV_TOKEN:-}" ]; then
+        export GITLAB_TOKEN="$GITLAB_DEV_TOKEN"
+        token_name=GITLAB_DEV_TOKEN
+      elif [ "${DMTOOLS_GITLAB_TEAMMATES:-single}" = multiple ]; then
+        echo "GITLAB_DEV_TOKEN is required in multi-teammate mode; add it as a masked CI/CD variable" >&2
+        exit 1
+      else
+        token_name=GITLAB_TOKEN
+      fi
+      token_user="$(curl --fail --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN:-}" "$CI_API_V4_URL/user" 2>/dev/null \
+        | jq -r '.username // empty' 2>/dev/null || true)"
+      echo "Using $token_name as GITLAB_TOKEN (GitLab user: ${token_user:-unknown})"
+
+.factory-sm:
+  timeout: 1h
+  before_script:
+    - !reference [.factory-sm-install-tools, script]
+    - !reference [.factory-sm-use-dev-token, script]
+  variables:
+    GIT_DEPTH: "1"
+    GIT_SUBMODULE_STRATEGY: none
+    SM_GITLAB_PROJECT: ""
+    SM_DRY_RUN: "false"
+    SM_MACHINE_AUTHOR: ""
+    SM_PARALLEL_WORKERS: "0"
+  script:
+    - |
+      set -euo pipefail
+      for tool in bash git curl jq node gh unzip; do
+        command -v "$tool" >/dev/null || { echo "Required tool missing: $tool" >&2; exit 1; }
+      done
+      : "${GITLAB_TOKEN:?Set a masked GitLab token with api scope and project access}"
+      : "${SOURCE_GITHUB_TOKEN:?Set a masked GitHub token for release downloads}"
+      project="${SM_GITLAB_PROJECT:-$CI_PROJECT_PATH}"
+      project="${project#/}"
+      project="${project%/}"
+      [[ "$project" =~ ^[^/[:space:]]+(/[^/[:space:]]+)+$ ]] || {
+        echo "SM_GITLAB_PROJECT must be a namespace/project path (nested groups allowed)" >&2
+        exit 1
+      }
+      case "$SM_DRY_RUN" in true|false) ;; *) echo "SM_DRY_RUN must be true or false" >&2; exit 1 ;; esac
+      [[ "$SM_PARALLEL_WORKERS" =~ ^[0-9]+$ ]] || { echo "SM_PARALLEL_WORKERS must be a nonnegative integer" >&2; exit 1; }
+      [[ -f .dmtools/config.js ]] || { echo "Caller .dmtools/config.js is required" >&2; exit 1; }
+      export GITLAB_BASE_PATH="${GITLAB_BASE_PATH:-$CI_SERVER_URL}"
+      GITLAB_BASE_PATH="${GITLAB_BASE_PATH%/}"
+      [[ "$GITLAB_BASE_PATH" =~ ^https?://[^[:space:]]+$ && "$GITLAB_BASE_PATH" != */api/v4 ]] || {
+        echo "GITLAB_BASE_PATH must be an instance URL without /api/v4" >&2
+        exit 1
+      }
+      export GITLAB_WORKSPACE="${project%/*}" GITLAB_REPOSITORY="${project##*/}"
+      export GH_TOKEN="$SOURCE_GITHUB_TOKEN" DMTOOLS_GITHUB_TOKEN="$SOURCE_GITHUB_TOKEN"
+      export CI_RUN_URL="$CI_JOB_URL"
+      override="$(jq -nc --arg owner "$GITLAB_WORKSPACE" --arg repo "$GITLAB_REPOSITORY" \
+        --argjson dryRun "$SM_DRY_RUN" --arg machine "$SM_MACHINE_AUTHOR" --arg workers "$SM_PARALLEL_WORKERS" '
+          {params: {jobParams: ({owner: $owner, repo: $repo}
+            + (if $dryRun then {dryRun: true} else {} end)
+            + (if $machine != "" then {machineAuthor: $machine} else {} end)
+            + (if ($workers | tonumber) >= 2 then {parallelWorkers: ($workers | tonumber)} else {} end))}}
+        ')"
+      resolve_tag() {
+        local repository="$1" knob="$2"
+        if [[ "$knob" == latest ]]; then
+          gh api "repos/$repository/releases/latest" --jq .tag_name
+        else
+          [[ -n "$knob" ]] || { echo "Release version must not be empty" >&2; return 1; }
+          gh api "repos/$repository/releases/tags/$knob" --jq .tag_name
+        fi
+      }
+      # Version knobs are NOT job variables: those would outrank the caller's top-level YAML pins.
+      AGENTS_VERSION="${AGENTS_VERSION:-latest}" DMTOOLS_VERSION="${DMTOOLS_VERSION:-latest}"
+      AGENTS_TAG="$(resolve_tag IstiN/dmtools-agents "$AGENTS_VERSION")"
+      DMTOOLS_TAG="$(resolve_tag epam/dmtools-dart "$DMTOOLS_VERSION")"
+      [[ -n "$AGENTS_TAG" && "$AGENTS_TAG" != null && -n "$DMTOOLS_TAG" && "$DMTOOLS_TAG" != null ]] || {
+        echo "Release resolution returned no tag" >&2; exit 1
+      }
+      echo "agents pack release: $AGENTS_TAG (knob: $AGENTS_VERSION)"
+      echo "dmtools CLI release: $DMTOOLS_TAG (knob: $DMTOOLS_VERSION)"
+      install_dir="$(mktemp -d)"
+      trap 'rm -rf "$install_dir"' EXIT
+      if ! curl -fsSL --connect-timeout 15 --max-time 45 --retry 2 --retry-delay 2 \
+          "https://github.com/epam/dmtools-dart/releases/download/$DMTOOLS_TAG/install.sh" \
+          -o "$install_dir/install.sh"; then
+        echo "Release URL failed; downloading install.sh through the GitHub Releases API" >&2
+        gh release download "$DMTOOLS_TAG" --repo epam/dmtools-dart \
+          --pattern install.sh --dir "$install_dir" --clobber
+      fi
+      bash "$install_dir/install.sh" "$DMTOOLS_TAG"
+      export PATH="$HOME/.dmtools/bin:$PATH"
+      export DMTOOLS_PACK_REGISTRY="https://github.com/IstiN/dmtools-agents/releases/download/$AGENTS_TAG"
+      mkdir -p .dmtools
+      dmtools run sm_gitlab@latest "$override" --ciRunUrl "$CI_RUN_URL" --debug \
+        2>&1 | tee .dmtools/sm-run-output.txt
+  artifacts:
+    when: always
+    paths:
+      - .dmtools/sm-run-output.txt
+    expire_in: 7 days
