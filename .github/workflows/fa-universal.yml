@@ -137,6 +137,121 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      SOURCE_GITHUB_TOKEN:
+        description: "PAT with repo scope for git push and GitHub API"
+        required: false
+      PAT_TOKEN:
+        description: "Alternative PAT token"
+        required: false
+      GITLAB_TOKEN:
+        description: "GitLab token"
+        required: false
+      BITBUCKET_TOKEN:
+        description: "Bitbucket token"
+        required: false
+      CUSTOM_PROVIDER_KEY1:
+        description: "Generic provider-key slot 1"
+        required: false
+      CUSTOM_PROVIDER_KEY2:
+        description: "Generic provider-key slot 2"
+        required: false
+      CUSTOM_PROVIDER_KEY3:
+        description: "Generic provider-key slot 3"
+        required: false
+      FA_PROVIDER_TYPE:
+        description: "Optional secret override for fa_provider_type"
+        required: false
+      FA_PROVIDER_CONFIG:
+        description: "Optional secret override for fa_provider_config"
+        required: false
+      FA_PROVIDERS_QUEUE:
+        description: "Optional secret override for fa_providers_queue"
+        required: false
+      FA_PROVIDER_API_KEY:
+        description: "Direct FA provider API key"
+        required: false
+      FA_DAP_INVITE:
+        description: "DAP Hub invite token"
+        required: false
+      DAP_HUB_URL:
+        description: "DAP Hub URL"
+        required: false
+      DAP_CLIENT_SECRET:
+        description: "DAP client secret"
+        required: false
+      DAP_CHANNELS_JSON:
+        description: "DAP channels JSON"
+        required: false
+      DAP_KEY_PASSPHRASE:
+        description: "DAP key passphrase"
+        required: false
+      FA_NETWORK_ENROLL_URL:
+        description: "FA network enroll URL"
+        required: false
+      FA_NETWORK_TOKEN:
+        description: "FA network token"
+        required: false
+      FA_GITHUB_APP_ID:
+        description: "GitHub App ID for fa"
+        required: false
+      FA_GITHUB_APP_PRIVATE_KEY:
+        description: "GitHub App private key PEM for fa"
+        required: false
+      FA_GITHUB_APP_INSTALLATION_ID:
+        description: "GitHub App installation ID"
+        required: false
+      APP_ID:
+        description: "Fallback GitHub App ID"
+        required: false
+      APP_PRIVATE_KEY:
+        description: "Fallback GitHub App private key PEM"
+        required: false
+      DMTOOLS_ENV:
+        description: "Multiline dmtools.env content"
+        required: false
+      KIMI_API_KEY:
+        description: "Kimi API key"
+        required: false
+      GEMINI_API_KEY:
+        description: "Gemini API key"
+        required: false
+      OPENAI_API_KEY:
+        description: "OpenAI API key"
+        required: false
+      ANTHROPIC_API_KEY:
+        description: "Anthropic API key"
+        required: false
+      OPENROUTER_API_KEY:
+        description: "OpenRouter API key"
+        required: false
+      ZAI_API_KEY:
+        description: "z.ai API key"
+        required: false
+      ZAI_CODE_KEY:
+        description: "Fallback z.ai API key"
+        required: false
+      DIAL_API_KEY:
+        description: "DIAL API key"
+        required: false
+      JIRA_BASE_PATH:
+        description: "Jira base URL"
+        required: false
+      JIRA_LOGIN_PASS_TOKEN:
+        description: "Jira auth token"
+        required: false
+      JIRA_AUTH_TYPE:
+        description: "Jira auth type"
+        required: false
+      ADO_ORGANIZATION:
+        description: "Azure DevOps organization"
+        required: false
+      ADO_PROJECT:
+        description: "Azure DevOps project"
+        required: false
+      ADO_PAT_TOKEN:
+        description: "Azure DevOps PAT"
+        required: false
 
 concurrency:
   group: >-
