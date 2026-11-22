@@ -3,16 +3,22 @@
 # @ a4cd62f (step: Seed local git excludes (factory workspace artifacts)) — stage-2 de-bloat.
 # Behavior contract: identical. Invoke with `bash -e` (the GH runner default
 # shell for inline `run:`); env block stays on the workflow step.
-  {
-    echo '# factory workspace artifacts (seeded per-run, never commit)'
-    echo '.codegraph/'
-    echo '.dmtools/fa-trace.log'
-    echo '.dmtools/run-output.txt'
-    echo '.dmtools/stall-capture.log'
-    echo '.dmtools/fa-sessions/'
-    echo '.dmtools/copilot-sessions/'
-    echo '.fah/bash_jobs/'
-    echo '# the factory clone itself: an in-index gitlink without'
-    echo '# .gitmodules breaks every actions/checkout with submodules'
-    echo 'factory-agents/'
-  } >> .git/info/exclude
+mkdir -p .git/info
+touch .git/info/exclude
+for pattern in \
+  '.codegraph/' \
+  '.dmtools-target-workingdir' \
+  '.dmtools/fa-trace.log' \
+  '.dmtools/run-output.txt' \
+  '.dmtools/stall-capture.log' \
+  '.dmtools/credential-helper.log' \
+  '.dmtools/fa-sessions/' \
+  '.dmtools/copilot-sessions/' \
+  '.fah/bash_jobs/' \
+  '.fah/trajectories/' \
+  'factory-agents/'
+do
+  if ! grep -qxF "$pattern" .git/info/exclude 2>/dev/null; then
+    echo "$pattern" >> .git/info/exclude
+  fi
+done

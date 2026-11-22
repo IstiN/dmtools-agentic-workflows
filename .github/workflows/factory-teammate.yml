@@ -236,23 +236,6 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-      - name: Set up Java for agent work
-        if: inputs.java-version != ''
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: ${{ inputs.java-version }}
-          cache: gradle
-      - name: Set up Node.js for agent work
-        if: inputs.node-version != ''
-        uses: actions/setup-node@v5
-        with:
-          node-version: ${{ inputs.node-version }}
-      - name: Set up Python for agent work
-        if: inputs.python-version != ''
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ inputs.python-version }}
       - name: Fetch factory scripts (this repo @ invocation ref)
         # Stage-2 de-bloat delivery: the guard's domain step (scripts/
         # teammate-dispatch-gate.sh) rides the same immutable factory-kit
@@ -519,6 +502,29 @@ jobs:
       # to determine Flutter version for channel: stable", live: gh-623 run
       # 35370007049). Two steps with plain if-comparisons — the GH parser
       # rejects map-indexing expressions inside with:.
+      - name: Set up Java for agent work
+        if: inputs.java-version != ''
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+          # Cache what the target repository builds with; empty = no cache.
+          cache: ${{ hashFiles('**/pom.xml') != '' && 'maven' || hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') != '' && 'gradle' || '' }}
+          # Keep the runner's own Maven settings (mirrors, credentials) on self-hosted runners.
+          overwrite-settings: false
+
+      - name: Set up Node.js for agent work
+        if: inputs.node-version != ''
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Set up Python for agent work
+        if: inputs.python-version != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
       - name: Set up Flutter for agent work (channel)
         if: inputs.flutter-version == 'stable' || inputs.flutter-version == 'beta' || inputs.flutter-version == 'main' || inputs.flutter-version == 'master'
         uses: subosito/flutter-action@v2
