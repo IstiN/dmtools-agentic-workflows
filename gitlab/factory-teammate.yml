@@ -195,19 +195,22 @@
             '((.description // "") | capture("(?i)\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+#(?<n>[0-9]+)").n) //
              ((.source_branch // "") | capture("^ai/gl-(?<n>[0-9]+)$").n) // empty' 2>/dev/null)"
         fi
+        close_add_labels=''
         case "$leg" in
           rework)
             # Failed or cancelled rework keeps its request label (see finalize); only the busy status is cleared.
             if [ "${CI_JOB_STATUS:-}" = success ]; then close_labels='agent:rework,status:In Rework'; else close_labels='status:In Rework'; fi ;;
-          review) close_labels='agent:review,status:In Review' ;;
+          review)
+            if [ "${CI_JOB_STATUS:-}" = success ]; then close_labels='agent:review,status:In Review'
+            else close_add_labels='agent:review'; close_labels='status:In Review'; fi ;;
           *) close_labels='' ;;
         esac
         if [ -z "$token" ]; then
           echo "Warning: no GitLab token available to close the $leg cycle on linked issue/MR" >&2
-        elif [ -n "$close_labels" ]; then
+        elif [ -n "$close_add_labels$close_labels" ]; then
           echo "Closing $leg cycle (job ${CI_JOB_STATUS:-unknown}) on issue #${issue:-none} and MR !${mr:-none}"
-          [ -z "$issue" ] || relabel "issues/$issue" '' "$close_labels"
-          [ -z "$mr" ] || relabel "merge_requests/$mr" '' "$close_labels"
+          [ -z "$issue" ] || relabel "issues/$issue" "$close_add_labels" "$close_labels"
+          [ -z "$mr" ] || relabel "merge_requests/$mr" "$close_add_labels" "$close_labels"
           if [ "${CI_JOB_STATUS:-}" = success ] && [ "$leg" = rework ] && [ -n "$mr" ]; then
             relabel "merge_requests/$mr" '' 'ai_validated,ai_validating,validation_failed,ai_pr_reviewed,pr_approved'
           fi
@@ -420,7 +423,10 @@
         local result="$?" session_dir
         trap - EXIT
         set +e
-        if [[ "$leg" == review ]]; then update_labels '' 'agent:review,status:In Review'; fi
+        if [[ "$leg" == review ]]; then
+          if [[ "$result" == 0 ]]; then update_labels '' 'agent:review,status:In Review'
+          else update_labels 'agent:review' 'status:In Review'; fi
+        fi
         if [[ "$leg" == rework ]]; then
           if [[ "$result" != 0 ]]; then update_labels 'agent:rework' 'status:In Rework'
           else update_labels '' 'status:In Rework'; fi
@@ -566,7 +572,7 @@
         add_labels=''
         case "$leg" in
           dev) remove_labels='status:In Development' ;;
-          review) remove_labels='agent:review,status:In Review' ;;
+          review) add_labels='agent:review'; remove_labels='status:In Review' ;;
           rework) add_labels='agent:rework'; remove_labels='status:In Rework' ;;
           *) remove_labels='' ;;
         esac
@@ -661,7 +667,8 @@ ai-teammate-scan:
                 {key: "FACTORY_LEG", value: ""},
                 {key: "FACTORY_HOME_REF", value: $factoryHomeRef},
                 {key: "DMTOOLS_AI_TEAMMATE_SCAN", value: "true"},
-                {key: "DMTOOLS_AI_DEV_USERNAME", value: $username}
+                {key: "DMTOOLS_AI_DEV_USERNAME", value: $username},
+                {key: "AGENT_HANDLE", value: $username}
               ]}')"
             curl --fail-with-body --silent --show-error --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
               --header "Content-Type: application/json" \

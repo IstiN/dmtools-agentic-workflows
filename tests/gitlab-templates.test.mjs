@@ -154,6 +154,8 @@ function requests(result) {
     assert.equal(variables.FACTORY_HOME_REF, 'a'.repeat(40));
     assert.equal(variables.FACTORY_LEG, '', 'derive the leg from fresh state, not stale scan labels');
     assert.equal(variables.DMTOOLS_AI_TEAMMATE_SCAN, 'true');
+    assert.equal(variables.AGENT_HANDLE, variables.DMTOOLS_AI_DEV_USERNAME,
+      'the child must route against the assignee selected by the scanner');
     return variables;
   });
 }
@@ -354,6 +356,30 @@ test('failed rework retains its request label and original exit code', () => {
   }
 });
 
+test('failed review restores its request label and preserves the original exit code', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gitlab-review-'));
+  try {
+    const finalize = main.slice(main.indexOf('finalize() {'), main.indexOf('\nagent_result=1'));
+    const result = spawnSync('bash', ['-c', `
+      set -euo pipefail
+      update_labels() { printf 'LABELS add=%s remove=%s\\n' "$1" "$2"; }
+      note() { printf 'NOTE %s\\n' "$1"; }
+      git() { :; }; cp() { :; }; rm() { :; }
+      leg=review; agent_result=42
+      ${finalize}
+      trap finalize EXIT
+      exit 42
+    `], { encoding: 'utf8', cwd: dir, env: {
+      PATH: process.env.PATH, HOME: dir, RUNNER_TEMP: join(dir, 'session'), FA_LOG_FILE: join(dir, 'missing'),
+      CI_RUN_URL: 'https://gitlab.example.com/jobs/1',
+    } });
+    assert.equal(result.status, 42, result.stderr);
+    assert.match(result.stdout, /LABELS add=agent:review remove=status:In Review/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('cancelled rework retains its queue label and uses the developer token', () => {
   const dir = mkdtempSync(join(tmpdir(), 'gitlab-cancel-'));
   try {
@@ -375,6 +401,32 @@ test('cancelled rework retains its queue label and uses the developer token', ()
     assert.match(result.stderr, /remove_labels=status:In Rework/);
     assert.match(result.stderr, /add_labels=agent:rework/);
     assert.doesNotMatch(result.stderr, /remove_labels=.*agent:rework/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cancelled review retains its request label and uses the reviewer token', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gitlab-cancel-review-'));
+  try {
+    mkdirSync(join(dir, '.dmtools'));
+    writeFileSync(join(dir, '.dmtools/factory-state.json'), JSON.stringify({
+      endpoint: 'issues/17', leg: 'review', branch: 'fa-sess/gl-17',
+    }));
+    const result = spawnSync('bash', ['-c', `
+      curl() { printf 'API %s\\n' "$*" >&2; }
+      git() { :; }
+      ${script('.factory-teammate', 'after_script')}
+    `], { encoding: 'utf8', cwd: dir, env: {
+      PATH: process.env.PATH, CI_JOB_STATUS: 'canceled',
+      GITLAB_TOKEN: 'setup', GITLAB_REVIEWER_TOKEN: 'reviewer', CI_PROJECT_ID: '123',
+      CI_SERVER_URL: 'https://gitlab.example.com', CI_JOB_URL: 'https://gitlab.example.com/jobs/1',
+    } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /PRIVATE-TOKEN: reviewer/);
+    assert.match(result.stderr, /add_labels=agent:review/);
+    assert.match(result.stderr, /remove_labels=status:In Review/);
+    assert.doesNotMatch(result.stderr, /remove_labels=.*agent:review/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -725,11 +777,14 @@ test('closes rework/review cycles on the linked issue and MR', () => {
     'CALL dev PUT merge_requests/9 add_labels=ai_pr_reviewed remove_labels=',
   ]);
 
-  const failedReview = run({ endpoint: 'merge_requests/9', leg: 'review' },
-    { CI_JOB_STATUS: 'failed', MR: '{"description":"","source_branch":"other"}' });
-  assert.deepEqual(writes(failedReview), [
-    'CALL dev PUT merge_requests/9 add_labels= remove_labels=agent:review,status:In Review',
-  ]);
+  for (const status of ['failed', 'canceled']) {
+    const failedReview = run({ endpoint: 'merge_requests/9', leg: 'review' },
+      { CI_JOB_STATUS: status, MR: '{"description":"Closes #17","source_branch":"other"}' });
+    assert.deepEqual(writes(failedReview), [
+      'CALL dev PUT issues/17 add_labels=agent:review remove_labels=status:In Review',
+      'CALL dev PUT merge_requests/9 add_labels=agent:review remove_labels=status:In Review',
+    ], `${status} review keeps its request queued on the linked issue and MR`);
+  }
 
   for (const result of [run({ endpoint: 'issues/17', leg: 'dev' }, { CI_JOB_STATUS: 'success' }), run(null)]) {
     assert.equal(result.status, 0, result.stderr);
