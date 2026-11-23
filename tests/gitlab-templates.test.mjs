@@ -229,6 +229,20 @@ test('API failures and malformed responses fail instead of reporting success', (
 });
 
 const main = script('.factory-teammate');
+
+test('scanner-selected assignee routes a child development job', () => {
+  const ticket = issue(17, ['agent:dev'], 'project_bot', 'ai-dev');
+  const [variables] = requests(scan([ticket]));
+  const routing = main.slice(main.indexOf('leg="$FACTORY_LEG"'), main.indexOf('\nslot="$leg"'));
+  const result = spawnSync('bash', ['-c', `
+    set -euo pipefail
+    ticket="$TICKET"; resource=issues; anchor=gl-17
+    ${routing}
+    echo "LEG=$leg"
+  `], { encoding: 'utf8', env: { PATH: process.env.PATH, ...variables, TICKET: JSON.stringify(ticket) } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /LEG=dev/);
+});
 test('version knobs default at run time so caller YAML, project and pipeline pins win', () => {
   for (const [source, job] of [[yaml, '.factory-teammate'], [smYaml, '.factory-sm']]) {
     const section = source.slice(source.indexOf(`${job}:\n`)).split(/^\S/m)[1];
@@ -781,9 +795,15 @@ test('closes rework/review cycles on the linked issue and MR', () => {
     const failedReview = run({ endpoint: 'merge_requests/9', leg: 'review' },
       { CI_JOB_STATUS: status, MR: '{"description":"Closes #17","source_branch":"other"}' });
     assert.deepEqual(writes(failedReview), [
-      'CALL dev PUT issues/17 add_labels=agent:review remove_labels=status:In Review',
+      'CALL dev PUT issues/17 add_labels= remove_labels=agent:review,status:In Review',
       'CALL dev PUT merge_requests/9 add_labels=agent:review remove_labels=status:In Review',
-    ], `${status} review keeps its request queued on the linked issue and MR`);
+    ], `${status} review queues the original MR, not the linked issue`);
+    const failedIssue = run({ endpoint: 'issues/17', leg: 'review' },
+      { CI_JOB_STATUS: status, RELATED: related });
+    assert.deepEqual(writes(failedIssue), [
+      'CALL dev PUT issues/17 add_labels=agent:review remove_labels=status:In Review',
+      'CALL dev PUT merge_requests/9 add_labels= remove_labels=agent:review,status:In Review',
+    ], `${status} review queues the original issue, not the linked MR`);
   }
 
   for (const result of [run({ endpoint: 'issues/17', leg: 'dev' }, { CI_JOB_STATUS: 'success' }), run(null)]) {

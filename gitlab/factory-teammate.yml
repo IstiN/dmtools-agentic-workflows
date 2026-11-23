@@ -209,8 +209,13 @@
           echo "Warning: no GitLab token available to close the $leg cycle on linked issue/MR" >&2
         elif [ -n "$close_add_labels$close_labels" ]; then
           echo "Closing $leg cycle (job ${CI_JOB_STATUS:-unknown}) on issue #${issue:-none} and MR !${mr:-none}"
-          [ -z "$issue" ] || relabel "issues/$issue" "$close_add_labels" "$close_labels"
-          [ -z "$mr" ] || relabel "merge_requests/$mr" "$close_add_labels" "$close_labels"
+          for target in ${issue:+issues/$issue} ${mr:+merge_requests/$mr}; do
+            if [ "$leg" = review ] && [ "${CI_JOB_STATUS:-}" != success ] && [ "$target" != "$endpoint" ]; then
+              relabel "$target" '' 'agent:review,status:In Review'
+            else
+              relabel "$target" "$close_add_labels" "$close_labels"
+            fi
+          done
           if [ "${CI_JOB_STATUS:-}" = success ] && [ "$leg" = rework ] && [ -n "$mr" ]; then
             relabel "merge_requests/$mr" '' 'ai_validated,ai_validating,validation_failed,ai_pr_reviewed,pr_approved'
           fi

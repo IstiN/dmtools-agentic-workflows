@@ -85,7 +85,8 @@ Caller requirements:
   verification/labels, and scheduled issue/MR queue scanning. The scanner
   handles assigned `agent:dev` issues plus `agent:review`/`agent:rework`
   issues and MRs without requiring the development label or assignment.
-  It skips holds/busy legs/questions, prioritizes rework, and deduplicates
+  It passes the selected development assignee as `AGENT_HANDLE` to the child
+  pipeline, skips holds/busy legs/questions, prioritizes rework, and deduplicates
   related issue/MR dispatches. The scan also syncs MR validation labels
   (`ai_validating`, `ai_validated`, `validation_failed`) from the head
   pipeline and, once per head SHA, arms `agent:rework` for red CI on MRs
@@ -115,8 +116,10 @@ Caller requirements:
 
 The template honors closed/held items, routes dev/review/rework, posts job
 start/completion notes, and consumes completed review/rework queue labels. Failed
-or cancelled rework restores `agent:rework`, even if a dispatcher consumed it
-before the job started; only the busy status is cleared. Successful
+or cancelled review and rework restore `agent:review` or `agent:rework` on the
+original anchor, even if a dispatcher consumed the request. With helpers enabled,
+failed review removes a duplicate request from the linked counterpart so holds on
+the anchor cannot be bypassed. Successful
 development/rework queues review unless the runner requested human input.
 An `ai_developed` issue without a new development request does not fall back
 to development when a review/rework label disappears. `rework-round:N` is
