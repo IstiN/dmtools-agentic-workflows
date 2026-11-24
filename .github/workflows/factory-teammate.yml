@@ -762,7 +762,7 @@ jobs:
       - name: Publish leg token usage (fa-tokens ledger -> factory-data)
         # Factory-board token spend (dmtools-agents#781 producer side): the
         # fa CLI prints a `fa-tokens:` ledger line per session segment into
-        # the run output; sum them and append one row per leg under
+        # the run output; newer agent packs append one row per leg under
         # data/agents-tokens.json on the factory-data branch — the shape the SM
         # tick's fetchTokensFromBranch consumes (card.tokens rows
         # {leg, at, prompt, completion, total, cacheRead, requests, source, model},
@@ -780,6 +780,8 @@ jobs:
           CONFIG: ${{ needs.guard.outputs.config }}
           RUN_OUTPUT: ${{ github.workspace }}/.dmtools/run-output.txt
           DATA_BRANCH: factory-data
+          # Older pinned publishers require this; newer publishers ignore it.
+          DATA_PATH: data/fa-tokens.json
         # Engine-side since dmtools-agents#940: the token-usage ledger publish
         # is SM cycle logic and ships in the factory-setup zip (pack
         # agents-rel-20261016-212752+). The awf copy is gone — this is the
