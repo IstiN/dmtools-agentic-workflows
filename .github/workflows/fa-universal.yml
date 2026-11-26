@@ -213,6 +213,9 @@ on:
       KIMI_API_KEY:
         description: "Kimi API key"
         required: false
+      KIMI_REVIEW_KEY:
+        description: "Fallback Kimi API key"
+        required: false
       GEMINI_API_KEY:
         description: "Gemini API key"
         required: false
@@ -329,12 +332,14 @@ jobs:
 
           # Standard LLM & DMTools keys
           DMTOOLS_ENV: ${{ secrets.DMTOOLS_ENV }}
-          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY || secrets.KIMI_REVIEW_KEY }}
+          KIMI_REVIEW_KEY: ${{ secrets.KIMI_REVIEW_KEY || secrets.KIMI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY || secrets.ZAI_CODE_KEY }}
+          ZAI_CODE_KEY: ${{ secrets.ZAI_CODE_KEY || secrets.ZAI_API_KEY }}
           DIAL_API_KEY: ${{ secrets.DIAL_API_KEY }}
           JIRA_BASE_PATH: ${{ secrets.JIRA_BASE_PATH || vars.JIRA_BASE_PATH }}
           JIRA_LOGIN_PASS_TOKEN: ${{ secrets.JIRA_LOGIN_PASS_TOKEN }}
