@@ -176,9 +176,6 @@ on:
       ENV_VAR_REVIEW_QUEUE:
         description: 'FA_PROVIDERS_QUEUE JSON for review runner (fa-review); may also be passed via vars.ENV_VAR_REVIEW_QUEUE.'
         required: false
-      _TEMP_ADMIN_GH_TOKEN:
-        description: 'Temporary admin token for secret sync'
-        required: false
 
 # NOTE: no `concurrency` here — the caller stub owns the per-issue group.
 # A reusable workflow with the SAME group as its caller deadlocks: the caller
@@ -263,11 +260,6 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
-          _TEMP_ADMIN_GH_TOKEN: ${{ secrets._TEMP_ADMIN_GH_TOKEN }}
-          _TEMP_ZAI_CODE_KEY: ${{ secrets.ZAI_CODE_KEY }}
-          _TEMP_ZAI_CODE_KEY_1: ${{ secrets.ZAI_CODE_KEY_1 }}
-          _TEMP_KIMI_REVIEW_KEY: ${{ secrets.KIMI_REVIEW_KEY }}
-          _TEMP_SOURCE_GITHUB_TOKEN: ${{ secrets.SOURCE_GITHUB_TOKEN }}
           NUMBER: ${{ inputs.issue }}
           PR_NUMBER: ${{ inputs.pr }}
           # Event context rides through from the caller (issues events) —

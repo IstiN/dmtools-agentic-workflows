@@ -583,33 +583,16 @@ run_fa_turn() {
   local mod="${INPUT_MODEL:-}"
   local base_url="${INPUT_BASE_URL:-}"
 
-  # Support ENV_VAR_DEV_QUEUE / ENV_VAR_REVIEW_QUEUE (dmtools-dart convention)
-  if [ -z "${FA_PROVIDERS_QUEUE:-}" ] && [ -n "${ENV_VAR_DEV_QUEUE:-${ENV_VAR_REVIEW_QUEUE:-}}" ]; then
-    export FA_PROVIDERS_QUEUE="${ENV_VAR_DEV_QUEUE:-${ENV_VAR_REVIEW_QUEUE}}"
-  fi
-
-  # If FA_PROVIDERS_QUEUE is provided without FA_PROVIDER_TYPE/FA_PROVIDER_CONFIG,
-  # derive primary provider type & config from the first entry in FA_PROVIDERS_QUEUE.
-  if [ -n "${FA_PROVIDERS_QUEUE:-}" ] && { [ -z "${FA_PROVIDER_TYPE:-}" ] || [ -z "${FA_PROVIDER_CONFIG:-}" ]; }; then
-    local first_type first_cfg
-    first_type="$(printf '%s' "${FA_PROVIDERS_QUEUE}" | jq -r '.[0].provider_type // empty' 2>/dev/null || true)"
-    first_cfg="$(printf '%s' "${FA_PROVIDERS_QUEUE}" | jq -c '.[0].provider_config // empty' 2>/dev/null || true)"
-    if [ -n "${first_type}" ] && [ -n "${first_cfg}" ] && [ "${first_cfg}" != "null" ]; then
-      export FA_PROVIDER_TYPE="${FA_PROVIDER_TYPE:-${first_type}}"
-      export FA_PROVIDER_CONFIG="${FA_PROVIDER_CONFIG:-$(printf '%s' "${first_cfg}" | jq -c 'if .apiKeyEnvVar == null and .apiKeyEnv != null then . + {apiKeyEnvVar: .apiKeyEnv} else . end')}"
-    fi
-  fi
-
   # If FA_PROVIDER_TYPE + FA_PROVIDER_CONFIG are not already preconfigured,
   # auto-configure FA_PROVIDER_* from INPUT_PROVIDER_NAME or available API keys.
   if [ -z "${FA_PROVIDER_TYPE:-}" ] || [ -z "${FA_PROVIDER_CONFIG:-}" ]; then
     if [ -z "${prov}" ]; then
-      if [ -n "${ZAI_API_KEY:-}" ]; then
-        prov="zai"
-        mod="${mod:-glm-5.3-flash}"
-      elif [ -n "${KIMI_API_KEY:-}" ]; then
+      if [ -n "${KIMI_API_KEY:-}" ]; then
         prov="kimi"
         mod="${mod:-kimi-for-coding}"
+      elif [ -n "${ZAI_API_KEY:-}" ]; then
+        prov="zai"
+        mod="${mod:-glm-4.5}"
       elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
         prov="anthropic"
         mod="${mod:-claude-sonnet-4-5}"
@@ -641,12 +624,12 @@ run_fa_turn() {
         export FA_PROVIDER_TYPE="zai"
         export FA_PROVIDER_CONFIG="$(jq -nc \
           --arg base "${base_url:-https://api.z.ai/api/coding/paas/v4}" \
-          --arg model "${mod:-glm-5.3-flash}" \
+          --arg model "${mod:-glm-4.5}" \
           '{baseUrl: $base, model: $model, apiKeyEnvVar: "ZAI_API_KEY", input: ["text", "image"]}')"
-        export FA_PROVIDERS_QUEUE="${FA_PROVIDERS_QUEUE:-$(jq -nc \
+        export FA_PROVIDERS_QUEUE="$(jq -nc \
           --arg base "${base_url:-https://api.z.ai/api/coding/paas/v4}" \
-          --arg model "${mod:-glm-5.3-flash}" \
-          '[{provider_type: "zai", provider_config: {baseUrl: $base, model: $model, apiKeyEnv: "ZAI_API_KEY", input: ["text", "image"]}}]')}"
+          --arg model "${mod:-glm-4.5}" \
+          '[{provider_type: "zai", provider_config: {baseUrl: $base, model: $model, apiKeyEnv: "ZAI_API_KEY", input: ["text", "image"]}}]')"
         ;;
       anthropic)
         export FA_PROVIDER_TYPE="anthropic"
