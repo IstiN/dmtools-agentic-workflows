@@ -25,6 +25,11 @@ never need edits to bump a version.
 | `factory-merge-trigger.yml` | The `pr_approved` merge bot: issue-labeled → linked PR → CLEAN → squash-merge → label removed → issue comment. Parameterized linking (body `Closes #N`, branch `N-…`/`gh-N`, PR-label reverse mapping). | `merge-trigger.yml` |
 | `factory-sm-kicker.yml` | The SM watchdog: dispatches an SM tick when the cron was missed; re-dispatches validation CI on codeless PR heads that carry no required contexts. | `sm-kicker.yml` |
 
+GitHub teammate token usage follows the selected agent pack: newer packs
+publish to `data/agents-tokens.json` on `factory-data`; older pinned packs
+continue to use `data/fa-tokens.json`. Existing history is not migrated
+automatically when upgrading.
+
 ## Native GitLab teammate pipeline
 
 Include the hidden `.factory-teammate` job from
