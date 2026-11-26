@@ -360,31 +360,23 @@ if [ -d "${WORKSPACE}/.git" ]; then
 fi
 
 # ── 5b. Checkout Umbrella / Project Dependencies (.dmtools/repositories.json) ─
+# Zero-overhead no-op when .dmtools/repositories.json is absent; when present,
+# clones/updates all declared repositories in parallel (--depth 1 --single-branch --filter=blob:none).
 checkout_project_dependencies() {
   local config_file="${WORKSPACE}/.dmtools/repositories.json"
-  if [ ! -f "${config_file}" ]; then
+  if [ ! -f "${config_file}" ] || ! command -v jq >/dev/null 2>&1; then
     return 0
   fi
   local dest_root="${FA_DEPENDENCIES_DEST:-./dependencies}"
-  if [ -f "${WORKSPACE}/setup/checkout.sh" ] && [ -f "${WORKSPACE}/setup/_common.sh" ]; then
-    echo "📦 Running ${WORKSPACE}/setup/checkout.sh --config ${config_file} --dest ${dest_root}..."
-    (cd "${WORKSPACE}" && bash "${WORKSPACE}/setup/checkout.sh" --config "${config_file}" --dest "${dest_root}")
-    while IFS='=' read -r k v; do
-      [ -n "${k}" ] && [ -n "${v}" ] && export "${k}=${v}"
-    done < <(jq -r --arg root "${WORKSPACE}/${dest_root#./}" '(.repositories // .) | (if type == "array" then . else to_entries[].value end) | .[]? | select(.envVar != null and .envVar != "") | "\(.envVar)=\($root)/\(.repo | split("/") | last)"' "${config_file}" 2>/dev/null || true)
-    return 0
-  fi
-  if ! command -v jq >/dev/null 2>&1; then
-    echo "::warning::jq not found; skipping ${config_file} checkout"
-    return 0
-  fi
+  local abs_dest_root="${WORKSPACE}/${dest_root#./}"
   local git_user git_email
   git_user="$(jq -r '.git.userName // "fa[bot]"' "${config_file}")"
   git_email="$(jq -r '.git.userEmail // "fa[bot]@users.noreply.github.com"' "${config_file}")"
-  mkdir -p "${WORKSPACE}/${dest_root#./}"
+  mkdir -p "${abs_dest_root}"
   local tmp_repos
   tmp_repos="$(mktemp)"
   jq -c '(.repositories // .) | (if type == "array" then . else to_entries[].value end) | .[]?' "${config_file}" > "${tmp_repos}" 2>/dev/null || true
+  local pids=()
   while IFS= read -r entry; do
     [ -n "${entry}" ] || continue
     local repo branch env_var name dest clone_url
@@ -393,30 +385,39 @@ checkout_project_dependencies() {
     branch="$(printf '%s' "${entry}" | jq -r '.branch // "main"')"
     env_var="$(printf '%s' "${entry}" | jq -r '.envVar // empty')"
     name="${repo##*/}"
-    dest="${WORKSPACE}/${dest_root#./}/${name}"
+    dest="${abs_dest_root}/${name}"
+    if [ -n "${env_var}" ]; then
+      export "${env_var}=${dest}"
+    fi
     clone_url="https://github.com/${repo}.git"
     if [ -n "${EFFECTIVE_GH_TOKEN:-}" ]; then
       clone_url="https://x-access-token:${EFFECTIVE_GH_TOKEN}@github.com/${repo}.git"
     fi
-    echo "▶ [deps] ${repo} @ ${branch} → ${dest}"
-    if [ -d "${dest}/.git" ]; then
-      git -C "${dest}" remote set-url origin "${clone_url}"
-      git -C "${dest}" fetch --depth 1 --filter=blob:none origin "${branch}" 2>/dev/null || git -C "${dest}" fetch --depth 1 origin "${branch}"
-      git -C "${dest}" checkout -q "${branch}" 2>/dev/null || true
-      git -C "${dest}" pull origin "${branch}" --ff-only 2>/dev/null || true
-    else
-      git clone --quiet --depth 1 --filter=blob:none --branch "${branch}" "${clone_url}" "${dest}" 2>/dev/null \
-        || git clone --quiet --depth 1 --branch "${branch}" "${clone_url}" "${dest}"
-    fi
-    git -C "${dest}" config user.name "${git_user}"
-    git -C "${dest}" config user.email "${git_email}"
-    if [ -n "${env_var}" ]; then
-      export "${env_var}=${dest}"
-    fi
+    (
+      if [ -d "${dest}/.git" ]; then
+        git -C "${dest}" remote set-url origin "${clone_url}"
+        git -C "${dest}" fetch --quiet --depth 1 --filter=blob:none --no-tags origin "${branch}" 2>/dev/null \
+          || git -C "${dest}" fetch --quiet --depth 1 --no-tags origin "${branch}"
+        git -C "${dest}" checkout -q "${branch}" 2>/dev/null || true
+        git -C "${dest}" pull --quiet origin "${branch}" --ff-only 2>/dev/null || true
+      else
+        git clone --quiet --depth 1 --single-branch --no-tags --filter=blob:none --branch "${branch}" "${clone_url}" "${dest}" 2>/dev/null \
+          || git clone --quiet --depth 1 --single-branch --no-tags --branch "${branch}" "${clone_url}" "${dest}"
+      fi
+      git -C "${dest}" config user.name "${git_user}"
+      git -C "${dest}" config user.email "${git_email}"
+      echo "  ✅ [deps] ${repo} @ ${branch} → ${dest}"
+    ) &
+    pids+=($!)
   done < "${tmp_repos}"
   rm -f "${tmp_repos}"
+  for pid in "${pids[@]+"${pids[@]}"}"; do
+    wait "${pid}" || true
+  done
 }
-checkout_project_dependencies
+if [ -f "${WORKSPACE}/.dmtools/repositories.json" ]; then
+  checkout_project_dependencies
+fi
 
 # ── 6. Configure DAP Hub Attachment ───────────────────────────────────────────
 export DAP_AGENT_NAME="${DAP_AGENT_NAME:-${SESSION_KEY}}"
