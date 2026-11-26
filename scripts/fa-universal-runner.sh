@@ -346,10 +346,77 @@ fi
 
 if [ -d "${WORKSPACE}/.git" ]; then
   mkdir -p "${WORKSPACE}/.git/info"
-  for pat in "dmtools.env" ".dmtools/" ".dmtools/**" ".fah/bash_jobs/" ".fah/bash_jobs/**" ".fah/.tools/" ".fah/.tools/**" ".fah/trajectories/" ".fah/trajectories/**" ".fah/sessions/" ".fah/sessions/**"; do
+  for pat in "dmtools.env" ".dmtools/fa-sessions/" ".dmtools/fa-sessions/**" ".dmtools/copilot-sessions/" ".dmtools/local-run-*" "dependencies/" "dependencies/**" ".fah/bash_jobs/" ".fah/bash_jobs/**" ".fah/.tools/" ".fah/.tools/**" ".fah/trajectories/" ".fah/trajectories/**" ".fah/sessions/" ".fah/sessions/**"; do
     grep -qxF "${pat}" "${WORKSPACE}/.git/info/exclude" 2>/dev/null || echo "${pat}" >> "${WORKSPACE}/.git/info/exclude"
   done
+  if [ -f "${WORKSPACE}/.dmtools/repositories.json" ] && command -v jq >/dev/null 2>&1; then
+    while IFS= read -r repo_name; do
+      [ -n "${repo_name}" ] || continue
+      for pat in "${repo_name}/" "dependencies/${repo_name}/"; do
+        grep -qxF "${pat}" "${WORKSPACE}/.git/info/exclude" 2>/dev/null || echo "${pat}" >> "${WORKSPACE}/.git/info/exclude"
+      done
+    done < <(jq -r '(.repositories // .) | (if type == "array" then . else to_entries[].value end) | .[]?.repo // empty | split("/") | last' "${WORKSPACE}/.dmtools/repositories.json" 2>/dev/null || true)
+  fi
 fi
+
+# ── 5b. Checkout Umbrella / Project Dependencies (.dmtools/repositories.json) ─
+checkout_project_dependencies() {
+  local config_file="${WORKSPACE}/.dmtools/repositories.json"
+  if [ ! -f "${config_file}" ]; then
+    return 0
+  fi
+  local dest_root="${FA_DEPENDENCIES_DEST:-./dependencies}"
+  if [ -f "${WORKSPACE}/setup/checkout.sh" ] && [ -f "${WORKSPACE}/setup/_common.sh" ]; then
+    echo "📦 Running ${WORKSPACE}/setup/checkout.sh --config ${config_file} --dest ${dest_root}..."
+    (cd "${WORKSPACE}" && bash "${WORKSPACE}/setup/checkout.sh" --config "${config_file}" --dest "${dest_root}")
+    while IFS='=' read -r k v; do
+      [ -n "${k}" ] && [ -n "${v}" ] && export "${k}=${v}"
+    done < <(jq -r --arg root "${WORKSPACE}/${dest_root#./}" '(.repositories // .) | (if type == "array" then . else to_entries[].value end) | .[]? | select(.envVar != null and .envVar != "") | "\(.envVar)=\($root)/\(.repo | split("/") | last)"' "${config_file}" 2>/dev/null || true)
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "::warning::jq not found; skipping ${config_file} checkout"
+    return 0
+  fi
+  local git_user git_email
+  git_user="$(jq -r '.git.userName // "fa[bot]"' "${config_file}")"
+  git_email="$(jq -r '.git.userEmail // "fa[bot]@users.noreply.github.com"' "${config_file}")"
+  mkdir -p "${WORKSPACE}/${dest_root#./}"
+  local tmp_repos
+  tmp_repos="$(mktemp)"
+  jq -c '(.repositories // .) | (if type == "array" then . else to_entries[].value end) | .[]?' "${config_file}" > "${tmp_repos}" 2>/dev/null || true
+  while IFS= read -r entry; do
+    [ -n "${entry}" ] || continue
+    local repo branch env_var name dest clone_url
+    repo="$(printf '%s' "${entry}" | jq -r '.repo // empty')"
+    [ -n "${repo}" ] || continue
+    branch="$(printf '%s' "${entry}" | jq -r '.branch // "main"')"
+    env_var="$(printf '%s' "${entry}" | jq -r '.envVar // empty')"
+    name="${repo##*/}"
+    dest="${WORKSPACE}/${dest_root#./}/${name}"
+    clone_url="https://github.com/${repo}.git"
+    if [ -n "${EFFECTIVE_GH_TOKEN:-}" ]; then
+      clone_url="https://x-access-token:${EFFECTIVE_GH_TOKEN}@github.com/${repo}.git"
+    fi
+    echo "▶ [deps] ${repo} @ ${branch} → ${dest}"
+    if [ -d "${dest}/.git" ]; then
+      git -C "${dest}" remote set-url origin "${clone_url}"
+      git -C "${dest}" fetch --depth 1 --filter=blob:none origin "${branch}" 2>/dev/null || git -C "${dest}" fetch --depth 1 origin "${branch}"
+      git -C "${dest}" checkout -q "${branch}" 2>/dev/null || true
+      git -C "${dest}" pull origin "${branch}" --ff-only 2>/dev/null || true
+    else
+      git clone --quiet --depth 1 --filter=blob:none --branch "${branch}" "${clone_url}" "${dest}" 2>/dev/null \
+        || git clone --quiet --depth 1 --branch "${branch}" "${clone_url}" "${dest}"
+    fi
+    git -C "${dest}" config user.name "${git_user}"
+    git -C "${dest}" config user.email "${git_email}"
+    if [ -n "${env_var}" ]; then
+      export "${env_var}=${dest}"
+    fi
+  done < "${tmp_repos}"
+  rm -f "${tmp_repos}"
+}
+checkout_project_dependencies
 
 # ── 6. Configure DAP Hub Attachment ───────────────────────────────────────────
 export DAP_AGENT_NAME="${DAP_AGENT_NAME:-${SESSION_KEY}}"
@@ -757,8 +824,14 @@ persist_session() {
   current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "${orig_branch}")"
   if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
     git add -A
-    # Never stage transient session or env files onto the code/memory branch
-    git reset -q HEAD -- dmtools.env .dmtools .fah/bash_jobs .fah/.tools .fah/sessions .fah/trajectories 2>/dev/null || true
+    # Never stage transient session, dependency checkouts, or env files onto the code/memory branch
+    git reset -q HEAD -- dmtools.env .dmtools/fa-sessions .dmtools/copilot-sessions dependencies .fah/bash_jobs .fah/.tools .fah/sessions .fah/trajectories 2>/dev/null || true
+    if [ -f "${WORKSPACE}/.dmtools/repositories.json" ] && command -v jq >/dev/null 2>&1; then
+      while IFS= read -r repo_name; do
+        [ -n "${repo_name}" ] || continue
+        git reset -q HEAD -- "${repo_name}" "dependencies/${repo_name}" 2>/dev/null || true
+      done < <(jq -r '(.repositories // .) | (if type == "array" then . else to_entries[].value end) | .[]?.repo // empty | split("/") | last' "${WORKSPACE}/.dmtools/repositories.json" 2>/dev/null || true)
+    fi
     if [ "${FA_PERSIST_MEMORY:-true}" = "false" ]; then
       git reset -q HEAD -- .fah/memory .fah/config.yaml 2>/dev/null || true
     fi
