@@ -168,6 +168,12 @@ on:
       FA_PROVIDERS_QUEUE:
         description: "Optional secret override for fa_providers_queue"
         required: false
+      ENV_VAR_DEV_QUEUE:
+        description: "Provider failover queue JSON (dmtools-dart convention)"
+        required: false
+      ENV_VAR_REVIEW_QUEUE:
+        description: "Review provider failover queue JSON (dmtools-dart convention)"
+        required: false
       FA_PROVIDER_API_KEY:
         description: "Direct FA provider API key"
         required: false
@@ -321,7 +327,9 @@ jobs:
           # AI Provider Configuration for fa
           FA_PROVIDER_TYPE: ${{ inputs.fa_provider_type || secrets.FA_PROVIDER_TYPE || vars.FA_PROVIDER_TYPE }}
           FA_PROVIDER_CONFIG: ${{ inputs.fa_provider_config || secrets.FA_PROVIDER_CONFIG || vars.FA_PROVIDER_CONFIG }}
-          FA_PROVIDERS_QUEUE: ${{ inputs.fa_providers_queue || secrets.FA_PROVIDERS_QUEUE || vars.FA_PROVIDERS_QUEUE }}
+          FA_PROVIDERS_QUEUE: ${{ inputs.fa_providers_queue || secrets.FA_PROVIDERS_QUEUE || vars.FA_PROVIDERS_QUEUE || secrets.ENV_VAR_DEV_QUEUE || vars.ENV_VAR_DEV_QUEUE || secrets.ENV_VAR_REVIEW_QUEUE || vars.ENV_VAR_REVIEW_QUEUE }}
+          ENV_VAR_DEV_QUEUE: ${{ secrets.ENV_VAR_DEV_QUEUE || vars.ENV_VAR_DEV_QUEUE }}
+          ENV_VAR_REVIEW_QUEUE: ${{ secrets.ENV_VAR_REVIEW_QUEUE || vars.ENV_VAR_REVIEW_QUEUE }}
           FA_PROVIDER_API_KEY: ${{ secrets.FA_PROVIDER_API_KEY }}
           CUSTOM_PROVIDER_KEY1: ${{ secrets.CUSTOM_PROVIDER_KEY1 }}
           CUSTOM_PROVIDER_KEY1_NAME: ${{ inputs.CUSTOM_PROVIDER_KEY1_NAME || vars.CUSTOM_PROVIDER_KEY1_NAME }}
