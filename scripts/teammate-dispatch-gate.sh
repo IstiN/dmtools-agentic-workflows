@@ -83,6 +83,39 @@
       echo "→ PR #$PR_NUMBER carries blocked — human hold, the machine skips it entirely"
       exit 0
     fi
+    pr_skip="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+      --json labels -q '([.labels[].name] | index("agent:skip")) != null' 2>/dev/null || echo false)"
+    if [ "$pr_skip" = "true" ]; then
+      echo "run=false" >> "$GITHUB_OUTPUT"
+      echo "→ PR #$PR_NUMBER carries agent:skip — agent bypassed"
+      exit 0
+    fi
+    pr_branch="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+      --json headRefName -q '.headRefName' 2>/dev/null || true)"
+    linked_issue=""
+    case "$pr_branch" in
+      ai/gh-[0-9]*)
+        cand="${pr_branch#ai/gh-}"
+        case "$cand" in
+          ''|*[!0-9]*) ;;
+          *) linked_issue="$cand" ;;
+        esac
+        ;;
+    esac
+    if [ -n "$linked_issue" ]; then
+      linked_labels="$(gh issue view "$linked_issue" --repo "$GITHUB_REPOSITORY" \
+        --json labels -q '[.labels[].name] | join(" ")' 2>/dev/null || true)"
+      if echo "$linked_labels" | grep -qw "agent:skip"; then
+        echo "run=false" >> "$GITHUB_OUTPUT"
+        echo "→ linked issue #$linked_issue carries agent:skip — PR #$PR_NUMBER bypassed"
+        exit 0
+      fi
+      if echo "$linked_labels" | grep -qw "blocked"; then
+        echo "run=false" >> "$GITHUB_OUTPUT"
+        echo "→ linked issue #$linked_issue carries blocked — PR #$PR_NUMBER skipped"
+        exit 0
+      fi
+    fi
     leg="$INPUT_LEG"
     if [ -z "$leg" ] && echo "$INPUT_REASON" | grep -qi 'rework'; then
       leg="rework"
